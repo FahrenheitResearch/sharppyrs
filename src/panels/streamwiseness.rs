@@ -238,11 +238,11 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
     let title_size = (h * 0.027).round().clamp(8.0, 11.0);
     let axis_size = (h * 0.022).round().clamp(7.0, 9.0);
     let tiny_size = (h * 0.019).round().clamp(6.0, 8.0);
-    let title_font = FontId::new(title_size, style.font_bold.clone());
-    let axis_font = FontId::new(axis_size, style.font_regular.clone());
-    let axis_font_bold = FontId::new(axis_size, style.font_bold.clone());
-    let tiny_font = FontId::new(tiny_size, style.font_regular.clone());
-    let tiny_font_bold = FontId::new(tiny_size, style.font_bold.clone());
+    let title_font = style.bold_font(title_size);
+    let axis_font = style.regular_font(axis_size);
+    let axis_font_bold = style.bold_font(axis_size);
+    let tiny_font = style.regular_font(tiny_size);
+    let tiny_font_bold = style.bold_font(tiny_size);
 
     // Title, centered in the band above the plot.
     painter.text(
@@ -262,7 +262,7 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
                 g.pt(g.left + g.width() / 2.0, g.top + g.height() / 2.0),
                 Align2::CENTER_CENTER,
                 "--",
-                FontId::new(12.0f32.max(title_size + 2.0), style.font_bold.clone()),
+                style.bold_font(12.0f32.max(title_size + 2.0)),
                 TEXT_COLOR,
             );
         }

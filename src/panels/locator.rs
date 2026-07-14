@@ -3,7 +3,7 @@
 //! in the default window layout. Same drawing as the hodograph's corner
 //! inset, scaled up to its own cell with the inset-row title framing.
 
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 
 use crate::derived::DerivedParams;
 use crate::skewt::SkewTStyle;
@@ -54,7 +54,7 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
         egui::pos2(rect.center().x, rect.min.y + title_h * 0.5),
         Align2::CENTER_CENTER,
         "Location",
-        FontId::new(title_px, style.font_bold.clone()),
+        style.bold_font(title_px),
         style.fg_color,
     );
     painter.line_segment(
@@ -73,7 +73,7 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
             body.center(),
             Align2::CENTER_CENTER,
             "no location",
-            FontId::new(title_px, style.font_regular.clone()),
+            style.regular_font(title_px),
             Color32::from_gray(0x88),
         );
         return;
@@ -157,7 +157,7 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
         egui::pos2(interior.min.x + 4.0, interior.max.y - 3.0),
         Align2::LEFT_BOTTOM,
         format!("{:.2}\u{b0}{ns} {:.2}\u{b0}{ew}", lat.abs(), lon.abs()),
-        FontId::new((title_px * 0.9).max(9.0), style.font_regular.clone()),
+        style.regular_font((title_px * 0.9).max(9.0)),
         MAP_POINT_COLOR,
     );
 }

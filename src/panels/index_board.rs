@@ -67,14 +67,15 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
     // 13-px regular+bold and 10-px small-bold Helvetica over a ~2-row-slack
     // layout; scale those proportions to the given rect).
     let rh = (h / 18.0).clamp(10.0, 64.0);
+    let (rf, hf, hfs) = board_fonts(rh, style);
     let b = Board {
         prof,
         dv,
         st: style,
         rh,
-        rf: FontId::new(rh * 0.78, style.font_regular.clone()),
-        hf: FontId::new(rh * 0.78, style.font_bold.clone()),
-        hfs: FontId::new((rh * 0.60).max(8.0), style.font_bold.clone()),
+        rf,
+        hf,
+        hfs,
     };
 
     // Column dividers: convective ends at 38% of the width, kinematics at
@@ -422,6 +423,14 @@ struct Board<'a> {
     hfs: FontId,
 }
 
+fn board_fonts(rh: f32, style: &SkewTStyle) -> (FontId, FontId, FontId) {
+    (
+        style.regular_font(rh * 0.78),
+        style.bold_font(rh * 0.78),
+        style.bold_font((rh * 0.60).max(8.0)),
+    )
+}
+
 fn standalone_board<'a>(
     painter: &Painter,
     rect: Rect,
@@ -438,14 +447,15 @@ fn standalone_board<'a>(
     p.rect_stroke(rect, 0.0, Stroke::new(1.0, RULE), StrokeKind::Inside);
     let content = rect.shrink2(vec2(4.0, 2.0));
     let rh = (content.height() / nominal_rows).clamp(10.0, 64.0);
+    let (rf, hf, hfs) = board_fonts(rh, style);
     let board = Board {
         prof,
         dv,
         st: style,
         rh,
-        rf: FontId::new(rh * 0.78, style.font_regular.clone()),
-        hf: FontId::new(rh * 0.78, style.font_bold.clone()),
-        hfs: FontId::new((rh * 0.60).max(8.0), style.font_bold.clone()),
+        rf,
+        hf,
+        hfs,
     };
     Some((p, board, content))
 }
@@ -886,7 +896,10 @@ impl Board<'_> {
         // Enlarge the label proportionally so it stays balanced.
         let rel = (scale / s0).min(1.48);
         let base = self.hfs.size;
-        let lbl_font = FontId::new((base + 1.0).max((base * rel).round()), self.st.font_bold.clone());
+        let lbl_font = FontId::new(
+            (base + 1.0).max((base * rel).round()),
+            self.hfs.family.clone(),
+        );
         let line_h = p
             .layout_no_wrap("1km & 6km AGL".to_owned(), lbl_font.clone(), BARB_BLUE)
             .size()
@@ -1101,4 +1114,24 @@ fn build_barb(wdir: f64, wspd: f64, shemis: bool, scale: f32) -> BarbPath {
         max = max.max(*a).max(*b);
     }
     BarbPath { segs, circle: None, min, max }
+}
+
+#[cfg(test)]
+mod typography_tests {
+    use super::*;
+    use crate::skewt::SoundingFontPreset;
+
+    #[test]
+    fn shared_typography_reaches_index_board_regular_and_bold_cells() {
+        let (base_regular, _, _) = board_fonts(20.0, &SkewTStyle::default());
+        let style = SkewTStyle::default()
+            .with_font_preset(SoundingFontPreset::TechnicalMonospace)
+            .with_text_scale(1.3);
+        let (regular, bold, small_bold) = board_fonts(20.0, &style);
+
+        assert!((regular.size - base_regular.size * 1.3).abs() < 0.001);
+        assert_eq!(regular.family, egui::FontFamily::Monospace);
+        assert_eq!(bold.family, egui::FontFamily::Monospace);
+        assert_eq!(small_bold.family, egui::FontFamily::Monospace);
+    }
 }

@@ -894,7 +894,7 @@ impl Widget for SoundingView<'_> {
                 egui::pos2(ur.max.x - 4.0, ur.min.y + 2.0),
                 Align2::RIGHT_TOP,
                 brand,
-                egui::FontId::new(11.0, self.style.font_regular.clone()),
+                self.style.regular_font(11.0),
                 self.style.fg_color,
             );
         }
