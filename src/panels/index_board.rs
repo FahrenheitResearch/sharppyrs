@@ -17,7 +17,7 @@
 //! recomputed: parcels come from [`Profile`], every scalar from
 //! [`DerivedParams`] (NaN renders as `--`).
 
-use egui::{Align2, Color32, FontId, Painter, Rect, Stroke, Vec2, pos2, vec2};
+use egui::{Align2, Color32, FontId, Painter, Rect, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 use sharprs::params::cape::ParcelResult;
 
@@ -48,7 +48,13 @@ const SWEAT_BLUE: Color32 = Color32::from_rgb(0x33, 0x99, 0xFF);
 const BARB_BLUE: Color32 = Color32::from_rgb(0x0A, 0x74, 0xC6);
 const BARB_RED: Color32 = Color32::from_rgb(0xAA, 0x00, 0x00);
 
-/// Draw the three-column index board into `rect`.
+/// Draw the legacy three-column index board into `rect`.
+///
+/// New layouts normally place the logical sections through
+/// [`draw_convective`], [`draw_kinematics`], and [`draw_indices`] so each is a
+/// first-class movable panel. This combined renderer remains available for
+/// restored layouts which explicitly selected the historical `Index board`
+/// panel.
 pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, style: &SkewTStyle) {
     let (w, h) = (rect.width(), rect.height());
     if w <= 6.0 || h <= 6.0 {
@@ -82,7 +88,57 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
     let (top, bot) = (rect.top() + 2.0, rect.bottom() - 2.0);
     b.col_conv(&p, Rect::from_min_max(pos2(rect.left() + 4.0, top), pos2(x1 - 4.0, bot)));
     b.col_kin(&p, Rect::from_min_max(pos2(x1 + 6.0, top), pos2(x2 - 4.0, bot)));
-    b.col_comp(&p, Rect::from_min_max(pos2(x2 + 6.0, top), pos2(rect.right() - 1.0, bot)));
+    b.col_comp(
+        &p,
+        Rect::from_min_max(pos2(x2 + 6.0, top), pos2(rect.right() - 1.0, bot)),
+        true,
+    );
+}
+
+/// Draw the parcel, thermodynamic, lapse-rate, and severe-composite section
+/// as a standalone panel.
+pub fn draw_convective(
+    painter: &Painter,
+    rect: Rect,
+    prof: &Profile,
+    dv: &DerivedParams,
+    style: &SkewTStyle,
+) {
+    let Some((p, b, content)) = standalone_board(painter, rect, prof, dv, style, 18.0) else {
+        return;
+    };
+    b.col_conv(&p, content);
+}
+
+/// Draw the layer kinematics, storm-motion, and AGL-wind section as a
+/// standalone panel.
+pub fn draw_kinematics(
+    painter: &Painter,
+    rect: Rect,
+    prof: &Profile,
+    dv: &DerivedParams,
+    style: &SkewTStyle,
+) {
+    let Some((p, b, content)) = standalone_board(painter, rect, prof, dv, style, 18.0) else {
+        return;
+    };
+    b.col_kin(&p, content);
+}
+
+/// Draw the environmental and severe-weather index readouts without the SHIP
+/// distribution chart. SHIP is a separate first-class panel in the split
+/// layout.
+pub fn draw_indices(
+    painter: &Painter,
+    rect: Rect,
+    prof: &Profile,
+    dv: &DerivedParams,
+    style: &SkewTStyle,
+) {
+    let Some((p, b, content)) = standalone_board(painter, rect, prof, dv, style, 9.0) else {
+        return;
+    };
+    b.col_comp(&p, content, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +420,34 @@ struct Board<'a> {
     hf: FontId,
     /// Smaller bold font for tight column headers / the barb label.
     hfs: FontId,
+}
+
+fn standalone_board<'a>(
+    painter: &Painter,
+    rect: Rect,
+    prof: &'a Profile,
+    dv: &'a DerivedParams,
+    style: &'a SkewTStyle,
+    nominal_rows: f32,
+) -> Option<(Painter, Board<'a>, Rect)> {
+    if rect.width() <= 6.0 || rect.height() <= 6.0 {
+        return None;
+    }
+    let p = painter.with_clip_rect(rect);
+    p.rect_filled(rect, 0.0, style.bg_color);
+    p.rect_stroke(rect, 0.0, Stroke::new(1.0, RULE), StrokeKind::Inside);
+    let content = rect.shrink2(vec2(4.0, 2.0));
+    let rh = (content.height() / nominal_rows).clamp(10.0, 64.0);
+    let board = Board {
+        prof,
+        dv,
+        st: style,
+        rh,
+        rf: FontId::new(rh * 0.78, style.font_regular.clone()),
+        hf: FontId::new(rh * 0.78, style.font_bold.clone()),
+        hfs: FontId::new((rh * 0.60).max(8.0), style.font_bold.clone()),
+    };
+    Some((p, board, content))
 }
 
 impl Board<'_> {
@@ -846,7 +930,7 @@ impl Board<'_> {
     }
 
     // ---- column 3: composite indices ----------------------------------
-    fn col_comp(&self, p: &Painter, r: Rect) {
+    fn col_comp(&self, p: &Painter, r: Rect, include_ship_chart: bool) {
         let dv = self.dv;
         let fg = self.st.fg_color;
         let rh = self.rh;
@@ -898,7 +982,7 @@ impl Board<'_> {
         let slack = (r.height() - n_rows * rh).max(0.0);
         const MID_GAP: f32 = 12.0; // gap around the indices -> CAPE divider
         const CHART_DIV: f32 = 8.0; // gap the SHIP chart's divider consumes
-        let (chart_h, mid_gap) = if slack > 70.0 {
+        let (chart_h, mid_gap) = if include_ship_chart && slack > 70.0 {
             (slack - MID_GAP - CHART_DIV, MID_GAP)
         } else {
             (0.0, slack.max(6.0))

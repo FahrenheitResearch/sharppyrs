@@ -30,6 +30,15 @@ pub enum PanelKind {
     SrWinds,
     LocationMap,
     HazardType,
+    /// Parcel/thermodynamic/lapse-rate portion of the legacy index board.
+    ConvectiveIndices,
+    /// Layer kinematics and storm-motion portion of the legacy index board.
+    Kinematics,
+    /// Environmental and severe-weather scalar portion of the legacy index
+    /// board (the SHIP distribution is its own panel).
+    SevereIndices,
+    /// Historical combined three-column index board, retained for restored
+    /// custom layouts.
     IndexBoard,
     Ship,
     Streamwiseness,
@@ -38,7 +47,7 @@ pub enum PanelKind {
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 13] = [
+    pub const ALL: [PanelKind; 16] = [
         PanelKind::Speed,
         PanelKind::Advection,
         PanelKind::Hodograph,
@@ -47,6 +56,9 @@ impl PanelKind {
         PanelKind::SrWinds,
         PanelKind::LocationMap,
         PanelKind::HazardType,
+        PanelKind::ConvectiveIndices,
+        PanelKind::Kinematics,
+        PanelKind::SevereIndices,
         PanelKind::IndexBoard,
         PanelKind::Ship,
         PanelKind::Streamwiseness,
@@ -64,7 +76,10 @@ impl PanelKind {
             PanelKind::SrWinds => "SR wind v. height",
             PanelKind::LocationMap => "Location map",
             PanelKind::HazardType => "Psbl haz. type",
-            PanelKind::IndexBoard => "Index board",
+            PanelKind::ConvectiveIndices => "Parcels & thermo",
+            PanelKind::Kinematics => "Kinematics",
+            PanelKind::SevereIndices => "Severe indices",
+            PanelKind::IndexBoard => "Combined index board",
             PanelKind::Ship => "SHIP box",
             PanelKind::Streamwiseness => "Streamwiseness",
             PanelKind::Stp => "Effective STP",
@@ -85,6 +100,9 @@ impl PanelKind {
             PanelKind::SrWinds => "srwinds",
             PanelKind::LocationMap => "locationmap",
             PanelKind::HazardType => "hazardtype",
+            PanelKind::ConvectiveIndices => "convectiveindices",
+            PanelKind::Kinematics => "kinematics",
+            PanelKind::SevereIndices => "severeindices",
             PanelKind::IndexBoard => "indexboard",
             PanelKind::Ship => "ship",
             PanelKind::Streamwiseness => "streamwiseness",
@@ -118,6 +136,15 @@ impl PanelKind {
             PanelKind::SrWinds => panels::srwinds::draw(painter, rect, prof, dv, st),
             PanelKind::LocationMap => panels::locator::draw(painter, rect, prof, dv, st),
             PanelKind::HazardType => panels::hazard::draw(painter, rect, prof, dv, st),
+            PanelKind::ConvectiveIndices => {
+                panels::index_board::draw_convective(painter, rect, prof, dv, st)
+            }
+            PanelKind::Kinematics => {
+                panels::index_board::draw_kinematics(painter, rect, prof, dv, st)
+            }
+            PanelKind::SevereIndices => {
+                panels::index_board::draw_indices(painter, rect, prof, dv, st)
+            }
             PanelKind::IndexBoard => panels::index_board::draw(painter, rect, prof, dv, st),
             PanelKind::Ship => panels::ship_inset::draw(painter, rect, prof, dv, st),
             PanelKind::Streamwiseness => panels::streamwiseness::draw(painter, rect, prof, dv, st),
@@ -138,8 +165,11 @@ pub struct SoundingLayout {
     pub main: PanelKind,
     /// The four inset cells under it.
     pub insets: [PanelKind; 4],
-    /// The three bottom-band cells.
-    pub bottom: [PanelKind; 3],
+    /// The six bottom-band cells. Slots 0 and 1 occupy full-height columns;
+    /// slots 2 and 3 share the third column vertically; slots 4 and 5 occupy
+    /// full-height columns. This keeps SHIP and the scalar severe indices
+    /// independently movable without changing the familiar board silhouette.
+    pub bottom: [PanelKind; 6],
     /// Hodograph window width (kts across).
     pub hodo_zoom_kts: f64,
     /// Height occupied by the upper (skew-T + right diagnostic grid) row,
@@ -157,9 +187,12 @@ pub struct SoundingLayout {
     pub right_column_fractions: [f32; 3],
     /// Width fractions for the four inset cells under the large right panel.
     pub inset_column_fractions: [f32; 4],
-    /// Width fractions for the three bottom-band cells. Hidden cells retain
-    /// their saved fraction but surrender it to visible cells while hidden.
-    pub bottom_column_fractions: [f32; 3],
+    /// Width fractions for the five bottom-band columns. A column whose slots
+    /// are all hidden retains its saved fraction but surrenders it to visible
+    /// columns while hidden.
+    pub bottom_column_fractions: [f32; 5],
+    /// Height fraction of the upper cell in the split third bottom column.
+    pub bottom_split_fraction: f32,
 }
 
 const DEFAULT_TOP_HEIGHT_FRACTION: f32 = 0.67;
@@ -167,7 +200,12 @@ const DEFAULT_SKEW_WIDTH_FRACTION: f32 = 0.46;
 const DEFAULT_RIGHT_MAIN_HEIGHT_FRACTION: f32 = 8.0 / 11.0;
 const DEFAULT_RIGHT_COLUMN_FRACTIONS: [f32; 3] = [3.0 / 29.0, 2.0 / 29.0, 24.0 / 29.0];
 const DEFAULT_INSET_COLUMN_FRACTIONS: [f32; 4] = [0.25; 4];
-const DEFAULT_BOTTOM_COLUMN_FRACTIONS: [f32; 3] = [0.61, 0.14, 0.25];
+// The first three columns exactly partition the historical IndexBoard share
+// (0.61) at its old 38% / 33.8% / 28.2% internal boundaries. Streamwiseness
+// and the optional final cell keep their previous 0.14 / 0.25 shares.
+const DEFAULT_BOTTOM_COLUMN_FRACTIONS: [f32; 5] = [0.2318, 0.20618, 0.17202, 0.14, 0.25];
+const DEFAULT_BOTTOM_SPLIT_FRACTION: f32 = 0.51;
+const LEGACY_DEFAULT_BOTTOM_COLUMN_FRACTIONS: [f32; 3] = [0.61, 0.14, 0.25];
 
 const MIN_TOP_HEIGHT_FRACTION: f32 = 0.40;
 const MAX_TOP_HEIGHT_FRACTION: f32 = 0.85;
@@ -175,8 +213,57 @@ const MIN_SKEW_WIDTH_FRACTION: f32 = 0.30;
 const MAX_SKEW_WIDTH_FRACTION: f32 = 0.70;
 const MIN_RIGHT_MAIN_HEIGHT_FRACTION: f32 = 0.35;
 const MAX_RIGHT_MAIN_HEIGHT_FRACTION: f32 = 0.85;
+const MIN_BOTTOM_SPLIT_FRACTION: f32 = 0.20;
+const MAX_BOTTOM_SPLIT_FRACTION: f32 = 0.80;
 const MIN_TRACK_FRACTION: f32 = 0.05;
 const GEOMETRY_TOKEN_PREFIX: &str = "g1:";
+const SPLIT_BOARD_GEOMETRY_TOKEN_PREFIX: &str = "g2:";
+
+fn migrate_legacy_bottom(
+    panels: [PanelKind; 3],
+    fractions: [f32; 3],
+) -> ([PanelKind; 6], [f32; 5]) {
+    if panels[0] == PanelKind::IndexBoard {
+        (
+            [
+                PanelKind::ConvectiveIndices,
+                PanelKind::Kinematics,
+                PanelKind::Ship,
+                PanelKind::SevereIndices,
+                panels[1],
+                panels[2],
+            ],
+            [
+                fractions[0] * 0.38,
+                fractions[0] * 0.338,
+                fractions[0] * 0.282,
+                fractions[1],
+                fractions[2],
+            ],
+        )
+    } else {
+        // Preserve arbitrary old three-cell layouts as three full-height
+        // columns. The two hidden spacer columns surrender their allocation,
+        // so the rendered old-panel width ratios remain unchanged.
+        (
+            [
+                panels[0],
+                panels[1],
+                PanelKind::Hidden,
+                PanelKind::Hidden,
+                panels[2],
+                PanelKind::Hidden,
+            ],
+            [
+                fractions[0],
+                fractions[1],
+                MIN_TRACK_FRACTION,
+                fractions[2],
+                MIN_TRACK_FRACTION,
+            ],
+        )
+    }
+}
 
 impl Default for SoundingLayout {
     fn default() -> Self {
@@ -190,7 +277,10 @@ impl Default for SoundingLayout {
                 PanelKind::LocationMap,
             ],
             bottom: [
-                PanelKind::IndexBoard,
+                PanelKind::ConvectiveIndices,
+                PanelKind::Kinematics,
+                PanelKind::Ship,
+                PanelKind::SevereIndices,
                 PanelKind::Streamwiseness,
                 PanelKind::Hidden,
             ],
@@ -201,6 +291,7 @@ impl Default for SoundingLayout {
             right_column_fractions: DEFAULT_RIGHT_COLUMN_FRACTIONS,
             inset_column_fractions: DEFAULT_INSET_COLUMN_FRACTIONS,
             bottom_column_fractions: DEFAULT_BOTTOM_COLUMN_FRACTIONS,
+            bottom_split_fraction: DEFAULT_BOTTOM_SPLIT_FRACTION,
         }
     }
 }
@@ -252,18 +343,18 @@ impl SoundingLayout {
     /// sections, panel tokens comma-separated within a section:
     ///
     /// ```text
-    /// strips(2) | main(1) | insets(4) | bottom(3) | hodo_zoom_kts
+    /// strips(2) | main(1) | insets(4) | bottom(6) | hodo_zoom_kts
     /// ```
     ///
     /// e.g. the default layout is
-    /// `"speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,hidden|250"`.
+    /// `"speed,advection|hodograph|slinky,thetae,srwinds,locationmap|convectiveindices,kinematics,ship,severeindices,streamwiseness,hidden|250"`.
     /// Panel tokens come from [`PanelKind::token`]; the zoom is a plain
     /// decimal in knots. A non-default geometry appends a sixth, versioned
-    /// section: `g1:` followed by the three major split fractions, the three
-    /// right-column fractions, four inset fractions, and three bottom-band
-    /// fractions (groups are separated by `;`). Default geometry deliberately
-    /// emits the original five sections byte-for-byte, and
-    /// [`SoundingLayout::from_tokens`] accepts both forms.
+    /// section: `g2:` followed by the three major split fractions, the three
+    /// right-column fractions, four inset fractions, five bottom-band column
+    /// fractions, and the split-column height fraction (groups are separated
+    /// by `;`). [`SoundingLayout::from_tokens`] also migrates the historical
+    /// three-cell bottom section and `g1:` geometry.
     pub fn to_tokens(&self) -> String {
         let csv = |kinds: &[PanelKind]| {
             kinds
@@ -291,7 +382,7 @@ impl SoundingLayout {
         );
         if !layout.has_default_geometry() {
             tokens.push('|');
-            tokens.push_str(GEOMETRY_TOKEN_PREFIX);
+            tokens.push_str(SPLIT_BOARD_GEOMETRY_TOKEN_PREFIX);
             tokens.push_str(&float_csv(&[
                 layout.top_height_fraction,
                 layout.skew_width_fraction,
@@ -303,6 +394,8 @@ impl SoundingLayout {
             tokens.push_str(&float_csv(&layout.inset_column_fractions));
             tokens.push(';');
             tokens.push_str(&float_csv(&layout.bottom_column_fractions));
+            tokens.push(';');
+            tokens.push_str(&layout.bottom_split_fraction.to_string());
         }
         tokens
     }
@@ -311,7 +404,9 @@ impl SoundingLayout {
     /// tokens is tolerated; the zoom is clamped to the interactive range
     /// (80–500 kts). Returns `None` for wrong section/panel counts,
     /// unknown panel tokens, malformed geometry, or non-finite numbers. Old
-    /// five-section strings restore the default geometry.
+    /// three-cell bottom sections are migrated: a leading historical combined
+    /// index board expands into the new convective, kinematic, SHIP, and
+    /// severe-index panels while the other two old cells keep their roles.
     pub fn from_tokens(s: &str) -> Option<SoundingLayout> {
         fn cells<const N: usize>(section: &str) -> Option<[PanelKind; N]> {
             let mut out = [PanelKind::Hidden; N];
@@ -337,7 +432,14 @@ impl SoundingLayout {
         let strips = cells::<2>(sections.next()?)?;
         let [main] = cells::<1>(sections.next()?)?;
         let insets = cells::<4>(sections.next()?)?;
-        let bottom = cells::<3>(sections.next()?)?;
+        let bottom_section = sections.next()?;
+        let (bottom, legacy_bottom) = if let Some(bottom) = cells::<6>(bottom_section) {
+            (bottom, None)
+        } else {
+            let legacy = cells::<3>(bottom_section)?;
+            let (bottom, _) = migrate_legacy_bottom(legacy, LEGACY_DEFAULT_BOTTOM_COLUMN_FRACTIONS);
+            (bottom, Some(legacy))
+        };
         let zoom: f64 = sections.next()?.trim().parse().ok()?;
         let geometry = sections.next();
         if sections.next().is_some() || !zoom.is_finite() {
@@ -351,18 +453,48 @@ impl SoundingLayout {
             hodo_zoom_kts: zoom.clamp(80.0, 500.0),
             ..SoundingLayout::default()
         };
+        if let Some(legacy) = legacy_bottom {
+            let (_, fractions) =
+                migrate_legacy_bottom(legacy, LEGACY_DEFAULT_BOTTOM_COLUMN_FRACTIONS);
+            layout.bottom_column_fractions = fractions;
+        }
         if let Some(geometry) = geometry {
-            let mut groups = geometry
-                .trim()
-                .strip_prefix(GEOMETRY_TOKEN_PREFIX)?
-                .split(';');
+            let geometry = geometry.trim();
+            let (version, body) = if let Some(body) = geometry.strip_prefix(GEOMETRY_TOKEN_PREFIX) {
+                (1, body)
+            } else if let Some(body) = geometry.strip_prefix(SPLIT_BOARD_GEOMETRY_TOKEN_PREFIX) {
+                (2, body)
+            } else {
+                return None;
+            };
+            let mut groups = body.split(';');
             let [top_height, skew_width, right_main_height] = floats::<3>(groups.next()?)?;
             layout.top_height_fraction = top_height;
             layout.skew_width_fraction = skew_width;
             layout.right_main_height_fraction = right_main_height;
             layout.right_column_fractions = floats::<3>(groups.next()?)?;
             layout.inset_column_fractions = floats::<4>(groups.next()?)?;
-            layout.bottom_column_fractions = floats::<3>(groups.next()?)?;
+            if version == 1 {
+                let legacy_fractions = floats::<3>(groups.next()?)?;
+                layout.bottom_column_fractions = if let Some(legacy) = legacy_bottom {
+                    migrate_legacy_bottom(legacy, legacy_fractions).1
+                } else {
+                    // Be liberal with a hand-authored six-cell layout carrying
+                    // old geometry: interpret the former IndexBoard share as
+                    // the first three new columns.
+                    [
+                        legacy_fractions[0] * 0.38,
+                        legacy_fractions[0] * 0.338,
+                        legacy_fractions[0] * 0.282,
+                        legacy_fractions[1],
+                        legacy_fractions[2],
+                    ]
+                };
+            } else {
+                layout.bottom_column_fractions = floats::<5>(groups.next()?)?;
+                let [split] = floats::<1>(groups.next()?)?;
+                layout.bottom_split_fraction = split;
+            }
             if groups.next().is_some() {
                 return None;
             }
@@ -393,6 +525,12 @@ impl SoundingLayout {
             MIN_RIGHT_MAIN_HEIGHT_FRACTION,
             MAX_RIGHT_MAIN_HEIGHT_FRACTION,
         );
+        self.bottom_split_fraction = if self.bottom_split_fraction.is_finite() {
+            self.bottom_split_fraction
+        } else {
+            DEFAULT_BOTTOM_SPLIT_FRACTION
+        }
+        .clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION);
         normalize_track_fractions(&mut self.right_column_fractions);
         normalize_track_fractions(&mut self.inset_column_fractions);
         normalize_track_fractions(&mut self.bottom_column_fractions);
@@ -405,6 +543,7 @@ impl SoundingLayout {
             && self.right_column_fractions == DEFAULT_RIGHT_COLUMN_FRACTIONS
             && self.inset_column_fractions == DEFAULT_INSET_COLUMN_FRACTIONS
             && self.bottom_column_fractions == DEFAULT_BOTTOM_COLUMN_FRACTIONS
+            && self.bottom_split_fraction == DEFAULT_BOTTOM_SPLIT_FRACTION
     }
 }
 
@@ -526,29 +665,79 @@ fn weighted_horizontal_rects<const N: usize>(band: Rect, fractions: &[f32; N]) -
     })
 }
 
-fn weighted_bottom_rects(band: Rect, panels: &[PanelKind; 3], fractions: &[f32; 3]) -> [Rect; 3] {
+fn bottom_active_columns(panels: &[PanelKind; 6]) -> [bool; 5] {
+    [
+        panels[0] != PanelKind::Hidden,
+        panels[1] != PanelKind::Hidden,
+        panels[2] != PanelKind::Hidden || panels[3] != PanelKind::Hidden,
+        panels[4] != PanelKind::Hidden,
+        panels[5] != PanelKind::Hidden,
+    ]
+}
+
+fn weighted_bottom_rects(
+    band: Rect,
+    panels: &[PanelKind; 6],
+    fractions: &[f32; 5],
+    split_fraction: f32,
+) -> [Rect; 6] {
     let mut base = *fractions;
     normalize_track_fractions(&mut base);
-    let fractions: [f32; 3] = std::array::from_fn(|index| {
-        if panels[index] == PanelKind::Hidden {
-            0.0
-        } else {
-            base[index]
-        }
-    });
+    let active = bottom_active_columns(panels);
+    let fractions: [f32; 5] =
+        std::array::from_fn(|index| if active[index] { base[index] } else { 0.0 });
     let total: f32 = fractions.iter().sum();
     let fractions = if total > 0.0 { fractions } else { base };
     let total: f32 = fractions.iter().sum();
     let mut x = band.min.x;
-    std::array::from_fn(|index| {
+    let columns: [Rect; 5] = std::array::from_fn(|index| {
         let min = egui::pos2(x, band.min.y);
-        x = if index == 2 {
+        x = if index == 4 {
             band.max.x
         } else {
             x + band.width() * fractions[index] / total
         };
         Rect::from_min_max(min, egui::pos2(x, band.max.y))
-    })
+    });
+
+    let collapsed = |at: egui::Pos2| Rect::from_min_max(at, at);
+    let split = split_fraction.clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION);
+    let middle_y = columns[2].min.y + columns[2].height() * split;
+    let middle_top = Rect::from_min_max(columns[2].min, egui::pos2(columns[2].max.x, middle_y));
+    let middle_bottom = Rect::from_min_max(egui::pos2(columns[2].min.x, middle_y), columns[2].max);
+    let (slot2, slot3) = match (
+        panels[2] != PanelKind::Hidden,
+        panels[3] != PanelKind::Hidden,
+    ) {
+        (true, true) => (middle_top, middle_bottom),
+        (true, false) => (columns[2], collapsed(columns[2].max)),
+        (false, true) => (collapsed(columns[2].min), columns[2]),
+        (false, false) => (collapsed(columns[2].min), collapsed(columns[2].min)),
+    };
+    [
+        if active[0] {
+            columns[0]
+        } else {
+            collapsed(columns[0].min)
+        },
+        if active[1] {
+            columns[1]
+        } else {
+            collapsed(columns[1].min)
+        },
+        slot2,
+        slot3,
+        if active[3] {
+            columns[3]
+        } else {
+            collapsed(columns[3].min)
+        },
+        if active[4] {
+            columns[4]
+        } else {
+            collapsed(columns[4].min)
+        },
+    ]
 }
 
 /// Move one shared boundary while leaving every non-adjacent track unchanged.
@@ -726,12 +915,15 @@ impl Widget for SoundingView<'_> {
         let inset_rects = weighted_horizontal_rects(inset_band, &layout.inset_column_fractions);
 
         // --- Bottom band cells. ---
-        // Hidden cells surrender their allocation to the visible cells, so
-        // removing the STP graphic makes the text-heavy index board wider
-        // instead of leaving an empty quarter of the row.
+        // Fully hidden columns surrender their allocation to visible columns,
+        // so the optional final cell never leaves an empty quarter of the row.
         let band = Rect::from_min_max(egui::pos2(rect.min.x, band_top), rect.max);
-        let bottom_rects =
-            weighted_bottom_rects(band, &layout.bottom, &layout.bottom_column_fractions);
+        let bottom_rects = weighted_bottom_rects(
+            band,
+            &layout.bottom,
+            &layout.bottom_column_fractions,
+            layout.bottom_split_fraction,
+        );
 
         // Scroll-to-zoom over the hodograph cell.
         if self.interactive
@@ -931,18 +1123,32 @@ impl Widget for SoundingView<'_> {
                     }
                 }
 
-                let bottom_active: Vec<usize> = layout
-                    .bottom
+                let bottom_columns_active = bottom_active_columns(&layout.bottom);
+                let bottom_active: Vec<usize> = bottom_columns_active
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, panel)| (*panel != PanelKind::Hidden).then_some(index))
+                    .filter_map(|(index, active)| (*active).then_some(index))
                     .collect();
                 for (boundary, adjacent) in bottom_active.windows(2).enumerate() {
+                    let left_rect = match adjacent[0] {
+                        0 => bottom_rects[0],
+                        1 => bottom_rects[1],
+                        2 => {
+                            if layout.bottom[2] != PanelKind::Hidden {
+                                bottom_rects[2]
+                            } else {
+                                bottom_rects[3]
+                            }
+                        }
+                        3 => bottom_rects[4],
+                        4 => bottom_rects[5],
+                        _ => unreachable!(),
+                    };
                     if let Some(x) = vertical_resize_handle(
                         ui,
                         &painter,
                         id.with(("bottom_column", adjacent[0], adjacent[1])),
-                        bottom_rects[adjacent[0]].max.x,
+                        left_rect.max.x,
                         band.min.y,
                         band.max.y,
                         "Drag to resize adjacent bottom panels",
@@ -955,6 +1161,22 @@ impl Widget for SoundingView<'_> {
                         );
                         resized = true;
                     }
+                }
+                if layout.bottom[2] != PanelKind::Hidden
+                    && layout.bottom[3] != PanelKind::Hidden
+                    && let Some(y) = horizontal_resize_handle(
+                        ui,
+                        &painter,
+                        id.with("bottom_split_height"),
+                        bottom_rects[2].max.y,
+                        bottom_rects[2].min.x,
+                        bottom_rects[2].max.x,
+                        "Drag to resize the two stacked bottom panels",
+                    )
+                {
+                    layout.bottom_split_fraction = ((y - band.min.y) / band.height())
+                        .clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION);
+                    resized = true;
                 }
                 if resized {
                     ui.ctx().request_repaint();
@@ -997,7 +1219,7 @@ mod tests {
         assert_eq!(
             tokens,
             "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
-             indexboard,streamwiseness,hidden|250"
+             convectiveindices,kinematics,ship,severeindices,streamwiseness,hidden|250"
         );
         assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
     }
@@ -1008,7 +1230,7 @@ mod tests {
         layout.strips[1] = PanelKind::Hidden;
         layout.main = PanelKind::Slinky;
         layout.insets[3] = PanelKind::HazardType;
-        layout.bottom[2] = PanelKind::Ship;
+        layout.bottom[5] = PanelKind::Stp;
         layout.hodo_zoom_kts = 137.5;
         assert_eq!(
             SoundingLayout::from_tokens(&layout.to_tokens()),
@@ -1024,22 +1246,69 @@ mod tests {
         layout.right_main_height_fraction = 0.63;
         layout.right_column_fractions = [0.12, 0.10, 0.78];
         layout.inset_column_fractions = [0.20, 0.22, 0.28, 0.30];
-        layout.bottom_column_fractions = [0.55, 0.25, 0.20];
+        layout.bottom_column_fractions = [0.25, 0.20, 0.15, 0.18, 0.22];
+        layout.bottom_split_fraction = 0.62;
 
         let tokens = layout.to_tokens();
-        assert!(tokens.contains("|g1:"));
+        assert!(tokens.contains("|g2:"));
         assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
     }
 
     #[test]
-    fn old_five_section_tokens_restore_default_geometry() {
+    fn old_three_cell_bottom_tokens_expand_the_combined_index_board() {
         let layout = SoundingLayout::from_tokens(
             "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
              indexboard,streamwiseness,stp|250",
         )
         .expect("legacy layout");
+        assert_eq!(
+            layout.bottom,
+            [
+                PanelKind::ConvectiveIndices,
+                PanelKind::Kinematics,
+                PanelKind::Ship,
+                PanelKind::SevereIndices,
+                PanelKind::Streamwiseness,
+                PanelKind::Stp,
+            ]
+        );
         assert!(layout.has_default_geometry());
-        assert!(!layout.to_tokens().contains("|g1:"));
+        assert!(!layout.to_tokens().contains("|g2:"));
+    }
+
+    #[test]
+    fn legacy_g1_bottom_widths_migrate_without_changing_their_total_shares() {
+        let layout = SoundingLayout::from_tokens(
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
+             indexboard,streamwiseness,stp|250|\
+             g1:0.6,0.5,0.7;0.1,0.1,0.8;0.25,0.25,0.25,0.25;0.5,0.2,0.3",
+        )
+        .expect("legacy g1 layout");
+        assert!((layout.bottom_column_fractions[0] - 0.19).abs() < 1.0e-6);
+        assert!((layout.bottom_column_fractions[1] - 0.169).abs() < 1.0e-6);
+        assert!((layout.bottom_column_fractions[2] - 0.141).abs() < 1.0e-6);
+        assert!((layout.bottom_column_fractions[..3].iter().sum::<f32>() - 0.5).abs() < 1.0e-6);
+        assert_eq!(layout.bottom_column_fractions[3], 0.2);
+        assert_eq!(layout.bottom_column_fractions[4], 0.3);
+        assert_eq!(layout.bottom_split_fraction, DEFAULT_BOTTOM_SPLIT_FRACTION);
+    }
+
+    #[test]
+    fn g2_split_height_and_tracks_are_clamped() {
+        let layout = SoundingLayout::from_tokens(
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
+             convectiveindices,kinematics,ship,severeindices,streamwiseness,hidden|250|\
+             g2:0.6,0.5,0.7;0.1,0.1,0.8;0.25,0.25,0.25,0.25;0,0,0,0,1;9",
+        )
+        .expect("g2 geometry");
+        assert_eq!(layout.bottom_split_fraction, MAX_BOTTOM_SPLIT_FRACTION);
+        assert!(
+            layout
+                .bottom_column_fractions
+                .iter()
+                .all(|value| *value >= MIN_TRACK_FRACTION)
+        );
+        assert!((layout.bottom_column_fractions.iter().sum::<f32>() - 1.0).abs() < 1.0e-5);
     }
 
     #[test]
@@ -1096,11 +1365,13 @@ mod tests {
 
     #[test]
     fn shared_track_drag_changes_only_the_adjacent_visible_tracks() {
-        let mut fractions = DEFAULT_BOTTOM_COLUMN_FRACTIONS;
-        set_active_track_boundary(&mut fractions, &[0, 1], 0, 0.5);
-        assert!((fractions[0] - 0.375).abs() < 1.0e-6);
-        assert!((fractions[1] - 0.375).abs() < 1.0e-6);
-        assert_eq!(fractions[2], 0.25, "hidden track keeps its saved share");
+        let mut fractions = [0.30, 0.10, 0.20, 0.15, 0.25];
+        set_active_track_boundary(&mut fractions, &[0, 1, 3], 0, 0.5);
+        assert!((fractions[0] - 0.275).abs() < 1.0e-6);
+        assert!((fractions[1] - 0.125).abs() < 1.0e-6);
+        assert_eq!(fractions[2], 0.20, "hidden track keeps its saved share");
+        assert_eq!(fractions[3], 0.15, "non-adjacent track is unchanged");
+        assert_eq!(fractions[4], 0.25, "hidden track keeps its saved share");
     }
 
     #[test]
@@ -1115,20 +1386,45 @@ mod tests {
     }
 
     #[test]
-    fn default_bottom_hides_stp_and_reclaims_its_width() {
+    fn default_bottom_splits_the_index_board_and_reclaims_the_hidden_cell() {
         let layout = SoundingLayout::default();
         assert_eq!(
             layout.bottom,
             [
-                PanelKind::IndexBoard,
+                PanelKind::ConvectiveIndices,
+                PanelKind::Kinematics,
+                PanelKind::Ship,
+                PanelKind::SevereIndices,
                 PanelKind::Streamwiseness,
                 PanelKind::Hidden,
             ]
         );
         let band = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1000.0, 100.0));
-        let rects = weighted_bottom_rects(band, &layout.bottom, &layout.bottom_column_fractions);
-        assert!((rects[0].width() - 813.3333).abs() < 0.1);
-        assert!((rects[1].width() - 186.6667).abs() < 0.1);
-        assert_eq!(rects[2].width(), 0.0);
+        let rects = weighted_bottom_rects(
+            band,
+            &layout.bottom,
+            &layout.bottom_column_fractions,
+            layout.bottom_split_fraction,
+        );
+        assert!((rects[0].width() + rects[1].width() + rects[2].width() - 813.3333).abs() < 0.1);
+        assert!((rects[4].width() - 186.6667).abs() < 0.1);
+        assert_eq!(rects[5].width(), 0.0);
+        assert!((rects[2].height() - 51.0).abs() < 0.1);
+        assert!((rects[3].height() - 49.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn hiding_one_stacked_panel_gives_the_other_the_full_column() {
+        let mut layout = SoundingLayout::default();
+        layout.bottom[2] = PanelKind::Hidden;
+        let band = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1000.0, 100.0));
+        let rects = weighted_bottom_rects(
+            band,
+            &layout.bottom,
+            &layout.bottom_column_fractions,
+            layout.bottom_split_fraction,
+        );
+        assert_eq!(rects[2].size(), Vec2::ZERO);
+        assert_eq!(rects[3].height(), band.height());
     }
 }
