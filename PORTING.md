@@ -27,8 +27,18 @@ Reference render regen: `python -m sharpmod.render <npz> out.png` (deps installe
 
 ## Checklist
 
-### Numerics (src/params.rs, src/derived.rs)
-- [x] thermo/interp/winds/parcelx/cape/eff layer/bunkers/dcape/max lapse rate (committed)
+### Architecture change (committed): numerics now come from the `sharprs` git
+### dependency (FahrenheitResearch/sharprs); sharppyrs is rendering-only.
+### extras.rs holds parcel-based Bunkers + SHARPpy-style FCST parcel.
+### DerivedParams (src/derived.rs) is the interface for all table/inset values;
+### golden_full.json is the reference. SoundingView (src/window.rs) composes
+### the full window; tests/snapshot_full.rs renders it headlessly.
+### Five background agents are porting: derived.rs impl, hodo(+map), 5 strips
+### +hazard, index_board+ship, streamwiseness+stp. Integrate + iterate visually
+### when they land.
+
+### Numerics
+- [x] skew-T numerics via sharprs (committed)
 - [ ] parcelTraj (storm slinky trajectory)
 - [ ] precip_water, k_index, t_totals, convective_temp, mean_relh, max_temp readout
 - [ ] wndg, tei, esp, mmp, mburst, dcp, sig_severe, ship, stp_cin, stp_fixed,
