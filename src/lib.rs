@@ -20,7 +20,9 @@
 //! [`SkewTStyle::space_grotesk`] to the widget to select it.
 
 pub mod barbs;
+pub mod derived;
 pub mod extras;
+pub mod panels;
 pub mod profile;
 pub mod skewt;
 pub mod utils;
