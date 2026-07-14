@@ -50,6 +50,8 @@ pub struct SoundingData {
     pub omeg: Option<Vec<f64>>,
     /// Latitude (degrees); used for the hemisphere of wind barbs.
     pub latitude: Option<f64>,
+    /// Longitude (degrees east); used by the location map panel.
+    pub longitude: Option<f64>,
     /// Missing-data sentinel (default -9999.0).
     pub missing: Option<f64>,
 }
@@ -111,7 +113,7 @@ impl Profile {
         let station = StationInfo {
             station_id: String::new(),
             latitude: data.latitude.unwrap_or(35.0),
-            longitude: f64::NAN,
+            longitude: data.longitude.unwrap_or(f64::NAN),
             elevation: f64::NAN,
             datetime: String::new(),
         };

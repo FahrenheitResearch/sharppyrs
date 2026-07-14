@@ -17,8 +17,7 @@ use crate::skewt::SkewTStyle;
 use crate::utils::{int2str, qc};
 use crate::Profile;
 
-#[path = "hodo_map_data.rs"]
-mod hodo_map_data;
+use super::hodo_map_data;
 
 // SPC default colors of the original (config defaults hardcoded, like the
 // Python widget does for everything the preferences dialog cannot change).
@@ -118,7 +117,9 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
     p.rect_filled(rect, 0.0, style.bg_color);
     draw_background(&p, &g, &fonts, style);
     draw_data(&p, &g, &fonts, prof, dv, style);
-    draw_locator(&p, &g, prof, style);
+    // The locator map now lives in its own panel (see panels::locator);
+    // keep the hodograph corner clear like upstream SHARPpy.
+    let _ = draw_locator;
 }
 
 // ----------------------------------------------------------------------

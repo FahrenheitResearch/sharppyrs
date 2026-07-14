@@ -54,6 +54,7 @@ fn load() -> (Value, Profile, DerivedParams) {
         wspd: arr("wspd"),
         omeg: Some(arr("omeg")),
         latitude: g["latitude"].as_f64(),
+        longitude: None,
         missing: None,
     };
     let prof = Profile::new(data).unwrap();

@@ -74,7 +74,7 @@ pub fn helicity(prof: &Profile, lower: f64, upper: f64, stu: f64, stv: f64) -> (
     }
     let sfc_pres = prof.pres[prof.sfc];
     let mut plower = prof.pres_at_height(prof.to_msl(lower));
-    let mut pupper = prof.pres_at_height(prof.to_msl(upper));
+    let pupper = prof.pres_at_height(prof.to_msl(upper));
     // Clamp the boundaries into the profile's pressure range (float
     // round-trips can put them an ulp outside it).
     if plower.is_finite() {

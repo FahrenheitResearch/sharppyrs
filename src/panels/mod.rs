@@ -5,6 +5,8 @@
 pub mod advection;
 pub mod hazard;
 pub mod hodo;
+pub(crate) mod hodo_map_data;
+pub mod locator;
 pub mod index_board;
 pub mod ship_inset;
 pub mod slinky;

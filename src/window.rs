@@ -7,6 +7,16 @@ use egui::{Align2, Rect, Response, Sense, Ui, Vec2, Widget};
 
 use crate::derived::DerivedParams;
 use crate::panels;
+
+/// What to draw in the fourth inset cell (upper-right row).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CornerPanel {
+    /// Location map with the sounding point (default).
+    #[default]
+    LocationMap,
+    /// The original SHARPpy "Psbl Haz. Type" watch box.
+    HazardType,
+}
 use crate::profile::{ParcelType, Profile};
 use crate::skewt::{SkewT, SkewTStyle};
 
@@ -20,6 +30,7 @@ pub struct SoundingView<'a> {
     parcel: ParcelType,
     style: SkewTStyle,
     size: Option<Vec2>,
+    corner: CornerPanel,
 }
 
 impl<'a> SoundingView<'a> {
@@ -32,7 +43,15 @@ impl<'a> SoundingView<'a> {
             parcel: ParcelType::MostUnstable,
             style: SkewTStyle::default(),
             size: None,
+            corner: CornerPanel::default(),
         }
+    }
+
+    /// Choose the fourth inset cell (default: the location map; pass
+    /// [`CornerPanel::HazardType`] for the original watch box).
+    pub fn corner_panel(mut self, corner: CornerPanel) -> Self {
+        self.corner = corner;
+        self
     }
 
     /// Skew-T title (top-left).
@@ -135,7 +154,14 @@ impl Widget for SoundingView<'_> {
         panels::slinky::draw(&painter, slinky_rect, self.prof, dv, st);
         panels::thetae::draw(&painter, thetae_rect, self.prof, dv, st);
         panels::srwinds::draw(&painter, srwinds_rect, self.prof, dv, st);
-        panels::hazard::draw(&painter, hazard_rect, self.prof, dv, st);
+        match self.corner {
+            CornerPanel::LocationMap => {
+                panels::locator::draw(&painter, hazard_rect, self.prof, dv, st)
+            }
+            CornerPanel::HazardType => {
+                panels::hazard::draw(&painter, hazard_rect, self.prof, dv, st)
+            }
+        }
 
         // --- Bottom band: index board / streamwiseness / STP (61/14/25%). ---
         let band = Rect::from_min_max(egui::pos2(rect.min.x, band_top), rect.max);
