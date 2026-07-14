@@ -40,11 +40,10 @@ pub const FONT_FAMILY: &str = "SpaceGrotesk";
 /// Name of the bundled bold font family registered by [`install_fonts`].
 pub const FONT_FAMILY_BOLD: &str = "SpaceGrotesk-Bold";
 
-/// Register the bundled Space Grotesk fonts (OFL licensed) with egui, adding
-/// the [`FONT_FAMILY`] / [`FONT_FAMILY_BOLD`] families while keeping the
-/// existing defaults untouched.
-pub fn install_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
+/// Add the bundled Space Grotesk fonts (OFL licensed) to an existing
+/// [`egui::FontDefinitions`] — use this when your app builds its own font set
+/// (call it before your own `ctx.set_fonts`).
+pub fn add_fonts(fonts: &mut egui::FontDefinitions) {
     fonts.font_data.insert(
         "SpaceGrotesk-Regular".to_owned(),
         egui::FontData::from_static(include_bytes!("../assets/fonts/SpaceGrotesk-Regular.ttf"))
@@ -63,5 +62,14 @@ pub fn install_fonts(ctx: &egui::Context) {
         egui::FontFamily::Name(FONT_FAMILY_BOLD.into()),
         vec!["SpaceGrotesk-Bold".to_owned()],
     );
+}
+
+/// Register the bundled Space Grotesk fonts with egui, replacing the font set
+/// with the egui defaults plus the [`FONT_FAMILY`] / [`FONT_FAMILY_BOLD`]
+/// families. If your app installs its own fonts, use [`add_fonts`] on your
+/// own `FontDefinitions` instead so they are not clobbered.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    add_fonts(&mut fonts);
     ctx.set_fonts(fonts);
 }
