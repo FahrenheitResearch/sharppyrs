@@ -120,9 +120,7 @@ impl PanelKind {
             PanelKind::HazardType => panels::hazard::draw(painter, rect, prof, dv, st),
             PanelKind::IndexBoard => panels::index_board::draw(painter, rect, prof, dv, st),
             PanelKind::Ship => panels::ship_inset::draw(painter, rect, prof, dv, st),
-            PanelKind::Streamwiseness => {
-                panels::streamwiseness::draw(painter, rect, prof, dv, st)
-            }
+            PanelKind::Streamwiseness => panels::streamwiseness::draw(painter, rect, prof, dv, st),
             PanelKind::Stp => panels::stp::draw(painter, rect, prof, dv, st),
             PanelKind::Hidden => {}
         }
@@ -160,7 +158,7 @@ impl Default for SoundingLayout {
             bottom: [
                 PanelKind::IndexBoard,
                 PanelKind::Streamwiseness,
-                PanelKind::Stp,
+                PanelKind::Hidden,
             ],
             hodo_zoom_kts: panels::hodo::DEFAULT_ZOOM_KTS,
         }
@@ -177,7 +175,7 @@ impl SoundingLayout {
     /// ```
     ///
     /// e.g. the default layout is
-    /// `"speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250"`.
+    /// `"speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,hidden|250"`.
     /// Panel tokens come from [`PanelKind::token`]; the zoom is a plain
     /// decimal in knots. Parse it back with [`SoundingLayout::from_tokens`].
     pub fn to_tokens(&self) -> String {
@@ -331,6 +329,30 @@ impl<'a> SoundingView<'a> {
     }
 }
 
+fn weighted_bottom_rects(band: Rect, panels: &[PanelKind; 3]) -> [Rect; 3] {
+    let base = [0.61_f32, 0.14, 0.25];
+    let weights: [f32; 3] = std::array::from_fn(|index| {
+        if panels[index] == PanelKind::Hidden {
+            0.0
+        } else {
+            base[index]
+        }
+    });
+    let total: f32 = weights.iter().sum();
+    let weights = if total > 0.0 { weights } else { base };
+    let total: f32 = weights.iter().sum();
+    let mut x = band.min.x;
+    std::array::from_fn(|index| {
+        let min = egui::pos2(x, band.min.y);
+        x = if index == 2 {
+            band.max.x
+        } else {
+            x + band.width() * weights[index] / total
+        };
+        Rect::from_min_max(min, egui::pos2(x, band.max.y))
+    })
+}
+
 impl Widget for SoundingView<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let size = self.size.unwrap_or_else(|| ui.available_size());
@@ -367,7 +389,10 @@ impl Widget for SoundingView<'_> {
         );
 
         // --- Upper right: brand band + grid2. ---
-        let ur = Rect::from_min_max(egui::pos2(skew_right, rect.min.y), egui::pos2(rect.max.x, band_top));
+        let ur = Rect::from_min_max(
+            egui::pos2(skew_right, rect.min.y),
+            egui::pos2(rect.max.x, band_top),
+        );
         let brand_h = 16.0f32;
         if let Some(brand) = &self.brand {
             painter.text(
@@ -396,15 +421,11 @@ impl Widget for SoundingView<'_> {
             cell(17.0, 8.0, 6.0, 3.0),
             cell(23.0, 8.0, 6.0, 3.0),
         ];
-        // --- Bottom band cells (61/14/25%). ---
+        // --- Bottom band cells (61/14/25% base weights). ---
+        // Hidden cells surrender their allocation to the visible cells, so
+        // removing the STP graphic makes the text-heavy index board wider
+        // instead of leaving an empty quarter of the row.
         let band = Rect::from_min_max(egui::pos2(rect.min.x, band_top), rect.max);
-        let x1 = band.min.x + band.width() * 0.61;
-        let x2 = band.min.x + band.width() * 0.75;
-        let bottom_rects = [
-            Rect::from_min_max(band.min, egui::pos2(x1, band.max.y)),
-            Rect::from_min_max(egui::pos2(x1, band.min.y), egui::pos2(x2, band.max.y)),
-            Rect::from_min_max(egui::pos2(x2, band.min.y), band.max),
-        ];
 
         // --- Layout state (per-widget unless the host pinned an id via
         // `layout_memory_id`; edited in-app via the gear). ---
@@ -419,6 +440,7 @@ impl Widget for SoundingView<'_> {
                 }
                 l
             });
+        let bottom_rects = weighted_bottom_rects(band, &layout.bottom);
 
         // Scroll-to-zoom over the hodograph cell.
         if self.interactive
@@ -564,7 +586,7 @@ mod tests {
         assert_eq!(
             tokens,
             "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
-             indexboard,streamwiseness,stp|250"
+             indexboard,streamwiseness,hidden|250"
         );
         assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
     }
@@ -617,5 +639,23 @@ mod tests {
         layout.hodo_zoom_kts = 210.0;
         store_layout(&ctx, id, &layout);
         assert_eq!(stored_layout(&ctx, id), Some(layout));
+    }
+
+    #[test]
+    fn default_bottom_hides_stp_and_reclaims_its_width() {
+        let layout = SoundingLayout::default();
+        assert_eq!(
+            layout.bottom,
+            [
+                PanelKind::IndexBoard,
+                PanelKind::Streamwiseness,
+                PanelKind::Hidden,
+            ]
+        );
+        let band = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1000.0, 100.0));
+        let rects = weighted_bottom_rects(band, &layout.bottom);
+        assert!((rects[0].width() - 813.3333).abs() < 0.1);
+        assert!((rects[1].width() - 186.6667).abs() < 0.1);
+        assert_eq!(rects[2].width(), 0.0);
     }
 }
