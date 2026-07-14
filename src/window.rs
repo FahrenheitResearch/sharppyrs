@@ -72,6 +72,32 @@ impl PanelKind {
         }
     }
 
+    /// Stable serialization token for this panel (see
+    /// [`SoundingLayout::to_tokens`]). Lowercase, no separators; new
+    /// variants get new tokens and existing tokens never change.
+    pub fn token(self) -> &'static str {
+        match self {
+            PanelKind::Speed => "speed",
+            PanelKind::Advection => "advection",
+            PanelKind::Hodograph => "hodograph",
+            PanelKind::Slinky => "slinky",
+            PanelKind::ThetaE => "thetae",
+            PanelKind::SrWinds => "srwinds",
+            PanelKind::LocationMap => "locationmap",
+            PanelKind::HazardType => "hazardtype",
+            PanelKind::IndexBoard => "indexboard",
+            PanelKind::Ship => "ship",
+            PanelKind::Streamwiseness => "streamwiseness",
+            PanelKind::Stp => "stp",
+            PanelKind::Hidden => "hidden",
+        }
+    }
+
+    /// Inverse of [`PanelKind::token`]; `None` for unknown tokens.
+    pub fn from_token(token: &str) -> Option<PanelKind> {
+        PanelKind::ALL.into_iter().find(|k| k.token() == token)
+    }
+
     fn draw(
         self,
         painter: &egui::Painter,
@@ -140,6 +166,85 @@ impl Default for SoundingLayout {
         }
     }
 }
+
+impl SoundingLayout {
+    /// Serialize to a compact, dependency-free token string a host can stash
+    /// in its own settings (JSON, ini, ...). Format — five `|`-separated
+    /// sections, panel tokens comma-separated within a section:
+    ///
+    /// ```text
+    /// strips(2) | main(1) | insets(4) | bottom(3) | hodo_zoom_kts
+    /// ```
+    ///
+    /// e.g. the default layout is
+    /// `"speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250"`.
+    /// Panel tokens come from [`PanelKind::token`]; the zoom is a plain
+    /// decimal in knots. Parse it back with [`SoundingLayout::from_tokens`].
+    pub fn to_tokens(&self) -> String {
+        let csv = |kinds: &[PanelKind]| {
+            kinds
+                .iter()
+                .map(|k| k.token())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "{}|{}|{}|{}|{}",
+            csv(&self.strips),
+            self.main.token(),
+            csv(&self.insets),
+            csv(&self.bottom),
+            self.hodo_zoom_kts,
+        )
+    }
+
+    /// Parse a [`SoundingLayout::to_tokens`] string. Whitespace around
+    /// tokens is tolerated; the zoom is clamped to the interactive range
+    /// (80–500 kts). Returns `None` for wrong section/panel counts,
+    /// unknown panel tokens, or a non-finite zoom.
+    pub fn from_tokens(s: &str) -> Option<SoundingLayout> {
+        fn cells<const N: usize>(section: &str) -> Option<[PanelKind; N]> {
+            let mut out = [PanelKind::Hidden; N];
+            let mut it = section.split(',');
+            for slot in &mut out {
+                *slot = PanelKind::from_token(it.next()?.trim())?;
+            }
+            it.next().is_none().then_some(out)
+        }
+        let mut sections = s.split('|');
+        let strips = cells::<2>(sections.next()?)?;
+        let [main] = cells::<1>(sections.next()?)?;
+        let insets = cells::<4>(sections.next()?)?;
+        let bottom = cells::<3>(sections.next()?)?;
+        let zoom: f64 = sections.next()?.trim().parse().ok()?;
+        if sections.next().is_some() || !zoom.is_finite() {
+            return None;
+        }
+        Some(SoundingLayout {
+            strips,
+            main,
+            insets,
+            bottom,
+            hodo_zoom_kts: zoom.clamp(80.0, 500.0),
+        })
+    }
+}
+
+/// Read the [`SoundingLayout`] stored in egui temp memory under `id` — the
+/// key a [`SoundingView`] built with [`SoundingView::layout_memory_id`]
+/// reads and writes. `None` until something stored one.
+pub fn stored_layout(ctx: &egui::Context, id: egui::Id) -> Option<SoundingLayout> {
+    ctx.data_mut(|d| d.get_temp(id))
+}
+
+/// Store a [`SoundingLayout`] in egui temp memory under `id`, where a
+/// [`SoundingView`] built with [`SoundingView::layout_memory_id`] of the
+/// same `id` picks it up on its next frame. Together with
+/// [`SoundingLayout::to_tokens`] / [`from_tokens`](SoundingLayout::from_tokens)
+/// this lets a host persist the layout across sessions.
+pub fn store_layout(ctx: &egui::Context, id: egui::Id, layout: &SoundingLayout) {
+    ctx.data_mut(|d| d.insert_temp(id, layout.clone()));
+}
 use crate::profile::{ParcelType, Profile};
 use crate::skewt::{SkewT, SkewTStyle};
 
@@ -155,6 +260,7 @@ pub struct SoundingView<'a> {
     size: Option<Vec2>,
     corner: CornerPanel,
     interactive: bool,
+    layout_id: Option<egui::Id>,
 }
 
 impl<'a> SoundingView<'a> {
@@ -169,7 +275,18 @@ impl<'a> SoundingView<'a> {
             size: None,
             corner: CornerPanel::default(),
             interactive: true,
+            layout_id: None,
         }
+    }
+
+    /// Pin the egui-memory key the panel layout is kept under (default: an
+    /// id derived from the widget's `ui.id()`, which shifts with the
+    /// surrounding layout). With a stable id the host can read/write the
+    /// layout via [`stored_layout`] / [`store_layout`] — e.g. to persist it
+    /// with [`SoundingLayout::to_tokens`].
+    pub fn layout_memory_id(mut self, id: egui::Id) -> Self {
+        self.layout_id = Some(id);
+        self
     }
 
     /// Enable/disable the hover readout cursor and the linked hodograph
@@ -289,8 +406,11 @@ impl Widget for SoundingView<'_> {
             Rect::from_min_max(egui::pos2(x2, band.min.y), band.max),
         ];
 
-        // --- Layout state (per-widget, edited in-app via the gear). ---
-        let id = ui.id().with("sounding_layout");
+        // --- Layout state (per-widget unless the host pinned an id via
+        // `layout_memory_id`; edited in-app via the gear). ---
+        let id = self
+            .layout_id
+            .unwrap_or_else(|| ui.id().with("sounding_layout"));
         let mut layout: SoundingLayout =
             ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or_else(|| {
                 let mut l = SoundingLayout::default();
@@ -422,5 +542,80 @@ impl Widget for SoundingView<'_> {
         ui.ctx().data_mut(|d| d.insert_temp(id, layout));
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_panel_token_round_trips() {
+        for k in PanelKind::ALL {
+            assert_eq!(PanelKind::from_token(k.token()), Some(k), "{k:?}");
+        }
+        assert_eq!(PanelKind::from_token("nonsense"), None);
+    }
+
+    #[test]
+    fn default_layout_round_trips_through_tokens() {
+        let layout = SoundingLayout::default();
+        let tokens = layout.to_tokens();
+        assert_eq!(
+            tokens,
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
+             indexboard,streamwiseness,stp|250"
+        );
+        assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
+    }
+
+    #[test]
+    fn customized_layout_round_trips_through_tokens() {
+        let mut layout = SoundingLayout::default();
+        layout.strips[1] = PanelKind::Hidden;
+        layout.main = PanelKind::Slinky;
+        layout.insets[3] = PanelKind::HazardType;
+        layout.bottom[2] = PanelKind::Ship;
+        layout.hodo_zoom_kts = 137.5;
+        assert_eq!(
+            SoundingLayout::from_tokens(&layout.to_tokens()),
+            Some(layout)
+        );
+    }
+
+    #[test]
+    fn from_tokens_tolerates_whitespace_and_clamps_zoom() {
+        let layout = SoundingLayout::from_tokens(
+            " speed , advection | hodograph | slinky,thetae,srwinds,hazardtype \
+             | indexboard,streamwiseness,stp | 9000 ",
+        )
+        .expect("padded tokens parse");
+        assert_eq!(layout.insets[3], PanelKind::HazardType);
+        assert_eq!(layout.hodo_zoom_kts, 500.0, "zoom clamps to 80..=500");
+    }
+
+    #[test]
+    fn from_tokens_rejects_malformed_input() {
+        for bad in [
+            "",
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap",
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|NaN",
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250|extra",
+            "speed,advection,speed|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250",
+            "speed,advection|hodograph|slinky,thetae,srwinds,teapot|indexboard,streamwiseness,stp|250",
+        ] {
+            assert_eq!(SoundingLayout::from_tokens(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn store_and_read_layout_via_pinned_id() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("layout_memory_test");
+        assert_eq!(stored_layout(&ctx, id), None);
+        let mut layout = SoundingLayout::default();
+        layout.hodo_zoom_kts = 210.0;
+        store_layout(&ctx, id, &layout);
+        assert_eq!(stored_layout(&ctx, id), Some(layout));
     }
 }

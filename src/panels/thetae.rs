@@ -7,7 +7,7 @@
 //! Theta-e (Kelvin) comes from `prof.inner.thetae`; the theta axis range is
 //! data-driven (min/max over p > 400 mb, padded by 10 K) like the original.
 
-use egui::{Color32, Align2, FontId, Painter, Pos2, Rect, Stroke};
+use egui::{Align2, FontId, Painter, Pos2, Rect, Stroke};
 
 use crate::derived::DerivedParams;
 use crate::skewt::SkewTStyle;
@@ -121,13 +121,13 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
         t += 10.0;
     }
 
-    // Theta-E profile trace, 2 px, lowest 400+ mb only, colored per segment
-    // by theta-e value (Pivotal-style banded table).
+    // Theta-E profile trace, 2 px red, lowest 400+ mb only (original
+    // SHARPpy styling; the banded theta-e table lives on the MAP plots).
+    let stroke = Stroke::new(2.0, style.temp_color);
     for i in 0..pairs.len().saturating_sub(1) {
         if pairs[i].0 > 400.0 {
             let (p1, t1) = pairs[i];
             let (p2, t2) = pairs[i + 1];
-            let stroke = Stroke::new(2.0, thetae_color((t1 + t2) / 2.0));
             p.line_segment(
                 [
                     pt(theta_to_pix(t1), pres_to_pix(p1)),
@@ -137,32 +137,4 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
             );
         }
     }
-}
-
-/// Pivotal-style theta-e color bands (K): 10-K tiers from 360+ down to 230,
-/// deep greens on top, turning white near 320 and descending through greys
-/// below 310.
-fn thetae_color(te_k: f64) -> Color32 {
-    const BANDS: [(f64, Color32); 14] = [
-        (360.0, Color32::from_rgb(0x00, 0x5C, 0x24)),
-        (350.0, Color32::from_rgb(0x14, 0x7A, 0x32)),
-        (340.0, Color32::from_rgb(0x2E, 0x9E, 0x41)),
-        (330.0, Color32::from_rgb(0x66, 0xC1, 0x6C)),
-        (320.0, Color32::from_rgb(0xFF, 0xFF, 0xFF)),
-        (310.0, Color32::from_rgb(0xD4, 0xD4, 0xD4)),
-        (300.0, Color32::from_rgb(0xC0, 0xC0, 0xC0)),
-        (290.0, Color32::from_rgb(0xAC, 0xAC, 0xAC)),
-        (280.0, Color32::from_rgb(0x99, 0x99, 0x99)),
-        (270.0, Color32::from_rgb(0x87, 0x87, 0x87)),
-        (260.0, Color32::from_rgb(0x76, 0x76, 0x76)),
-        (250.0, Color32::from_rgb(0x67, 0x67, 0x67)),
-        (240.0, Color32::from_rgb(0x59, 0x59, 0x59)),
-        (230.0, Color32::from_rgb(0x4D, 0x4D, 0x4D)),
-    ];
-    for (lo, c) in BANDS {
-        if te_k >= lo {
-            return c;
-        }
-    }
-    BANDS[BANDS.len() - 1].1
 }

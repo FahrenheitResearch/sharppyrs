@@ -32,7 +32,9 @@ pub use profile::{ParcelType, Profile, SoundingData};
 pub use sharprs;
 pub use sharprs::params::cape::ParcelResult as Parcel;
 pub use skewt::{SkewT, SkewTStyle};
-pub use window::{CornerPanel, SoundingView};
+pub use window::{
+    CornerPanel, PanelKind, SoundingLayout, SoundingView, store_layout, stored_layout,
+};
 pub use derived::DerivedParams;
 
 /// Name of the bundled regular font family registered by [`install_fonts`].

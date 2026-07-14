@@ -100,10 +100,6 @@ struct Fonts {
 impl Fonts {
     fn new(hgt: f64, style: &SkewTStyle) -> Fonts {
         const PT: f64 = 4.0 / 3.0;
-
-/// Default hodograph window (kts across); SHARPpy-Reimagined uses 200,
-/// widened 25% per field feedback. Scroll-zoomable in `SoundingView`.
-pub(crate) const DEFAULT_ZOOM_KTS: f64 = 250.0;
         let fsize = 7.0;
         let bold = style.font_bold.clone();
         let label_pt = fsize + hgt * 0.0045;
