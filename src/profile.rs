@@ -28,6 +28,41 @@ pub enum ParcelType {
     MixedLayer,
 }
 
+/// Geographic footprint represented by an area-averaged sounding.
+///
+/// Point soundings leave this unset. Hosts that average real model grid
+/// cells can attach their sampled (not merely requested) bounds so the
+/// location panel can show exactly which area contributed to the profile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocationFootprint {
+    pub south: f64,
+    pub west: f64,
+    pub north: f64,
+    pub east: f64,
+}
+
+impl LocationFootprint {
+    /// Create a finite, non-empty latitude/longitude rectangle. Dateline-
+    /// crossing rectangles are not representable by this compact form.
+    pub fn new(south: f64, west: f64, north: f64, east: f64) -> Option<Self> {
+        let values = [south, west, north, east];
+        (values.into_iter().all(f64::is_finite)
+            && (-90.0..=90.0).contains(&south)
+            && (-90.0..=90.0).contains(&north)
+            && (-180.0..=180.0).contains(&west)
+            && (-180.0..=180.0).contains(&east)
+            && south <= north
+            && west <= east
+            && (south < north || west < east))
+            .then_some(Self {
+                south,
+                west,
+                north,
+                east,
+            })
+    }
+}
+
 /// Raw sounding input, ordered surface upward. Missing values may be encoded
 /// as `missing` (default -9999), NaN, or anything non-finite. Prefer building
 /// a [`sharprs::Profile`] yourself (e.g. via `rustwx-sounding`) and using
@@ -91,6 +126,10 @@ pub struct Profile {
     /// Downdraft parcel trace (C / hPa).
     pub dpcl_ttrace: Vec<f64>,
     pub dpcl_ptrace: Vec<f64>,
+
+    /// Sampled geographic bounds for an area-averaged sounding. This is
+    /// presentation metadata only and never participates in diagnostics.
+    location_footprint: Option<LocationFootprint>,
 }
 
 fn clean(v: &[f64], missing: f64) -> Vec<f64> {
@@ -202,7 +241,18 @@ impl Profile {
             dcape: dc.dcape,
             dpcl_ttrace: dc.ttrace,
             dpcl_ptrace: dc.ptrace,
+            location_footprint: None,
         }
+    }
+
+    /// Attach or clear the sampled area represented by this profile.
+    pub fn set_location_footprint(&mut self, footprint: Option<LocationFootprint>) {
+        self.location_footprint = footprint;
+    }
+
+    /// Sampled area represented by this profile, if it is an area average.
+    pub fn location_footprint(&self) -> Option<LocationFootprint> {
+        self.location_footprint
     }
 
     /// The parcel of the given type (already computed).
@@ -218,5 +268,26 @@ impl Profile {
     /// Latitude (degrees north) from the station metadata.
     pub fn latitude(&self) -> f64 {
         self.inner.station.latitude
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocationFootprint;
+
+    #[test]
+    fn location_footprint_accepts_real_sampled_bounds_only() {
+        assert_eq!(
+            LocationFootprint::new(34.25, -99.75, 35.5, -98.25),
+            Some(LocationFootprint {
+                south: 34.25,
+                west: -99.75,
+                north: 35.5,
+                east: -98.25,
+            })
+        );
+        assert!(LocationFootprint::new(35.5, -99.75, 34.25, -98.25).is_none());
+        assert!(LocationFootprint::new(35.0, -99.0, 35.0, -99.0).is_none());
+        assert!(LocationFootprint::new(35.0, f64::NAN, 36.0, -98.0).is_none());
     }
 }

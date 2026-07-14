@@ -8,11 +8,32 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKi
 use crate::derived::DerivedParams;
 use crate::skewt::SkewTStyle;
 use crate::utils::qc;
-use crate::Profile;
+use crate::{LocationFootprint, Profile};
 
 const MAP_FILL: Color32 = Color32::from_rgb(0x05, 0x09, 0x0b);
 const MAP_POINT_COLOR: Color32 = Color32::from_rgb(0xFF, 0xDA, 0x00);
+const MAP_FOOTPRINT_COLOR: Color32 = Color32::from_rgb(0x00, 0xD8, 0xE8);
 const PT: f64 = 4.0 / 3.0;
+
+fn map_extent(
+    interior: Rect,
+    lat: f64,
+    lon: f64,
+    footprint: Option<LocationFootprint>,
+) -> (f64, f64, f64, f64) {
+    let cos_lat = lat.to_radians().cos().max(0.35);
+    let aspect = (interior.width() / interior.height()) as f64;
+    let mut half_lat = 4.0f64;
+    if let Some(box_) = footprint {
+        let required_lat = (lat - box_.south).abs().max((box_.north - lat).abs()) * 1.15;
+        let required_lon = (lon - box_.west).abs().max((box_.east - lon).abs()) * 1.15;
+        half_lat = half_lat
+            .max(required_lat)
+            .max(required_lon * cos_lat / aspect.max(0.01));
+    }
+    let half_lon = half_lat * aspect / cos_lat;
+    (lon - half_lon, lat - half_lat, lon + half_lon, lat + half_lat)
+}
 
 /// Draw the location panel into `rect`.
 #[allow(unused_variables)]
@@ -66,11 +87,8 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
     let mp = painter.with_clip_rect(interior);
 
     // Aspect-correct extent centered on the sounding point.
-    let half_lat = 4.0f64;
-    let cos_lat = lat.to_radians().cos().max(0.35);
-    let aspect = (interior.width() / interior.height()) as f64;
-    let half_lon = half_lat * aspect / cos_lat;
-    let (west, south, east, north) = (lon - half_lon, lat - half_lat, lon + half_lon, lat + half_lat);
+    let footprint = prof.location_footprint();
+    let (west, south, east, north) = map_extent(interior, lat, lon, footprint);
     let map_point = |plon: f64, plat: f64| -> Pos2 {
         Pos2::new(
             interior.min.x + ((plon - west) / (east - west) * interior.width() as f64) as f32,
@@ -98,6 +116,32 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
         }
     }
 
+    // Area-mean footprint first, sounding point second. The translucent fill
+    // keeps state outlines legible; the sampled bounds and center marker use
+    // distinct colors so an area average can never be mistaken for a point.
+    if let Some(box_) = footprint {
+        let bounds = Rect::from_two_pos(
+            map_point(box_.west, box_.north),
+            map_point(box_.east, box_.south),
+        );
+        mp.rect_filled(
+            bounds,
+            0.0,
+            Color32::from_rgba_unmultiplied(
+                MAP_FOOTPRINT_COLOR.r(),
+                MAP_FOOTPRINT_COLOR.g(),
+                MAP_FOOTPRINT_COLOR.b(),
+                28,
+            ),
+        );
+        mp.rect_stroke(
+            bounds,
+            0.0,
+            Stroke::new(1.5, MAP_FOOTPRINT_COLOR),
+            StrokeKind::Inside,
+        );
+    }
+
     // Crosshair at the sounding point.
     let c = map_point(lon, lat);
     let marker = Stroke::new(1.4, MAP_POINT_COLOR);
@@ -116,4 +160,29 @@ pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, s
         FontId::new((title_px * 0.9).max(9.0), style.font_regular.clone()),
         MAP_POINT_COLOR,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn location_extent_expands_to_keep_a_large_sampled_box_visible() {
+        let interior = Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 200.0));
+        let footprint = LocationFootprint::new(28.0, -108.0, 42.0, -92.0).unwrap();
+        let (west, south, east, north) =
+            map_extent(interior, 35.0, -100.0, Some(footprint));
+
+        assert!(west < footprint.west);
+        assert!(east > footprint.east);
+        assert!(south < footprint.south);
+        assert!(north > footprint.north);
+    }
+
+    #[test]
+    fn point_location_keeps_the_existing_four_degree_latitude_extent() {
+        let interior = Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 200.0));
+        let (_, south, _, north) = map_extent(interior, 35.0, -100.0, None);
+        assert_eq!((south, north), (31.0, 39.0));
+    }
 }

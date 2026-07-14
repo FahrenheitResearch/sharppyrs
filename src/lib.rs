@@ -28,7 +28,7 @@ pub mod skewt;
 pub mod utils;
 pub mod window;
 
-pub use profile::{ParcelType, Profile, SoundingData};
+pub use profile::{LocationFootprint, ParcelType, Profile, SoundingData};
 pub use sharprs;
 pub use sharprs::params::cape::ParcelResult as Parcel;
 pub use skewt::{SkewT, SkewTStyle};
