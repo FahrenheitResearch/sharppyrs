@@ -31,7 +31,7 @@ pub mod window;
 pub use profile::{ParcelType, Profile, SoundingData};
 pub use sharprs;
 pub use sharprs::params::cape::ParcelResult as Parcel;
-pub use skewt::{SkewT, SkewTStyle};
+pub use skewt::{SkewT, SkewTStyle, SoundingFontPreset};
 pub use window::{
     CornerPanel, PanelKind, SoundingLayout, SoundingView, store_layout, stored_layout,
 };
