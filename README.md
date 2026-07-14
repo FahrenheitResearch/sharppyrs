@@ -71,6 +71,16 @@ renders the bundled example HRRR sounding.
 
 ## License & attribution
 
-BSD-3-Clause, like SHARPpy and SHARPpy Reimagined; this crate is a derived
-port of their rendering and `sharptab` algorithms. Space Grotesk is bundled
-under the SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
+BSD-3-Clause, like [SHARPpy](https://github.com/sharppy/SHARPpy) (© SHARPpy
+contributors) and
+[SHARPpy-Reimagined-vRust](https://github.com/FahrenheitResearch/SHARPpy-Reimagined-vRust);
+this crate is a derived port of their rendering and `sharptab` algorithms —
+please cite Blumberg et al. 2017 (*BAMS*, 98, 1625–1636,
+[doi:10.1175/BAMS-D-15-00309.1](https://doi.org/10.1175/BAMS-D-15-00309.1))
+when citing this functionality. Numerics come from
+[`sharprs`](https://github.com/FahrenheitResearch/sharprs)
+(FahrenheitResearch). Space Grotesk (© 2020 Florian Karsten) is bundled under
+the SIL Open Font License 1.1 (`assets/fonts/OFL.txt`). The locator basemap
+lines are simplified from [Natural Earth](https://www.naturalearthdata.com/)
+1:50m data (public domain). Full license texts live in the linked
+repositories and `LICENSE` / `assets/fonts/OFL.txt` here.
