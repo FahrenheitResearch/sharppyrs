@@ -57,10 +57,6 @@ struct Geom {
 }
 
 impl Geom {
-    fn new(rect: Rect) -> Geom {
-        Geom::with_zoom(rect, DEFAULT_ZOOM_KTS)
-    }
-
     fn with_zoom(rect: Rect, zoom_kts: f64) -> Geom {
         let wid = rect.width() as f64;
         let hgt = rect.height() as f64;
