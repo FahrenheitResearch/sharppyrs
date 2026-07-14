@@ -111,6 +111,7 @@ pub struct SkewT<'a> {
     interp_winds: bool,
     style: SkewTStyle,
     size: Option<Vec2>,
+    cursor_readout: bool,
 }
 
 impl<'a> SkewT<'a> {
@@ -124,7 +125,14 @@ impl<'a> SkewT<'a> {
             interp_winds: true,
             style: SkewTStyle::default(),
             size: None,
+            cursor_readout: true,
         }
+    }
+
+    /// Enable/disable the hover readout cursor (default: on).
+    pub fn cursor_readout(mut self, on: bool) -> Self {
+        self.cursor_readout = on;
+        self
     }
 
     /// Title drawn at the top-left (e.g. `"HRRR 2026-06-25 06z F018  Valid: ..."`).
@@ -234,6 +242,13 @@ impl Geom {
         self.bry - (scl2 / scl1) * (self.bry - self.tpad)
     }
 
+    /// y (widget-local px) -> pressure (hPa); exact inverse of `pres_to_pix`.
+    fn pix_to_pres(&self, y: f64) -> f64 {
+        let scl1 = self.log_pmax - self.log_pmin;
+        let frac = (self.bry - y) / (self.bry - self.tpad);
+        (self.log_pmax - frac * scl1).exp()
+    }
+
     /// (temperature C, pressure hPa) -> x (widget-local px).
     fn tmpc_to_pix(&self, t: f64, p: f64) -> f64 {
         let scl1 = self.brtmpc
@@ -309,6 +324,12 @@ impl Widget for SkewT<'_> {
 
         self.draw_background(&painter, &g, &fonts);
         self.draw_data(&painter, &g, &fonts);
+        if self.cursor_readout
+            && let Some(pos) = response.hover_pos()
+            && let Some(pres) = hover_pressure(rect, pos)
+        {
+            self.draw_readout(&painter, &g, pres);
+        }
         response
     }
 }
@@ -1127,6 +1148,80 @@ impl SkewT<'_> {
             "HGZ",
             fonts.hgz.clone(),
             st.hgz_edge_color,
+        );
+    }
+}
+
+/// The pressure (hPa) under `pos` when it lies inside the plot area of a
+/// skew-T drawn into `rect` — shared by the widget's own readout and by
+/// [`crate::SoundingView`]'s linked hodograph cursor.
+pub(crate) fn hover_pressure(rect: Rect, pos: Pos2) -> Option<f64> {
+    let g = Geom::new(rect);
+    let x = (pos.x - rect.min.x) as f64;
+    let y = (pos.y - rect.min.y) as f64;
+    if x < g.lpad || x > g.wid + g.rpad || y <= g.tpad || y >= g.bry {
+        return None;
+    }
+    let pres = g.pix_to_pres(y);
+    if pres.is_finite() && pres <= g.pmax && pres >= g.pmin {
+        Some(pres)
+    } else {
+        None
+    }
+}
+
+impl SkewT<'_> {
+    /// Hover readout (port of `plotSkewT.updateReadout`): a rubber-band line
+    /// across the plot with height/pressure on the left and T/Td on the
+    /// right, all interpolated to the cursor's pressure.
+    fn draw_readout(&self, painter: &Painter, g: &Geom, pres: f64) {
+        let st = &self.style;
+        let inner = &self.prof.inner;
+        let y = g.pres_to_pix(pres);
+
+        painter.extend(Shape::dashed_line(
+            &[g.pt(g.lpad, y), g.pt(g.brx, y)],
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 160)),
+            3.0,
+            3.0,
+        ));
+
+        let hgt_agl = inner.to_agl(inner.interp_hght(pres));
+        let t = inner.interp_tmpc(pres);
+        let td = inner.interp_dwpc(pres);
+        let font = FontId::new(11.0, st.font_regular.clone());
+
+        let mut boxed = |pos: Pos2, anchor: Align2, text: String, color: Color32| {
+            let galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
+            let r = anchor.anchor_size(pos, galley.size() + Vec2::new(6.0, 2.0));
+            painter.rect_filled(r, 0.0, st.bg_color);
+            painter.galley(r.min + Vec2::new(3.0, 1.0), galley, color);
+        };
+        // Left of the line: height AGL above, pressure below.
+        boxed(
+            g.pt(g.lpad + 1.0, y - 2.0),
+            Align2::LEFT_BOTTOM,
+            format!("{} m", crate::utils::float2str(hgt_agl, 1)),
+            st.hgt_color,
+        );
+        boxed(
+            g.pt(g.lpad + 1.0, y + 2.0),
+            Align2::LEFT_TOP,
+            format!("{} hPa", crate::utils::float2str(pres, 1)),
+            st.fg_color,
+        );
+        // Right of the line: T above, Td below.
+        boxed(
+            g.pt(g.brx - 1.0, y - 2.0),
+            Align2::RIGHT_BOTTOM,
+            format!("T={} C", crate::utils::float2str(t, 1)),
+            st.temp_color,
+        );
+        boxed(
+            g.pt(g.brx - 1.0, y + 2.0),
+            Align2::RIGHT_TOP,
+            format!("Td={} C", crate::utils::float2str(td, 1)),
+            st.dewp_color,
         );
     }
 }

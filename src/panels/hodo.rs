@@ -519,3 +519,50 @@ fn draw_locator(p: &Painter, g: &Geom, prof: &Profile, style: &SkewTStyle) {
     mp.line_segment([c - Vec2::new(7.0, 0.0), c + Vec2::new(7.0, 0.0)], marker);
     mp.line_segment([c - Vec2::new(0.0, 7.0), c + Vec2::new(0.0, 7.0)], marker);
 }
+
+/// Linked cursor marker: the wind at `h_agl` (m) highlighted on the hodograph
+/// with a wind/height readout, driven by hovering the skew-T (see
+/// `SoundingView`).
+pub(crate) fn cursor_marker(
+    painter: &Painter,
+    rect: Rect,
+    prof: &Profile,
+    style: &SkewTStyle,
+    h_agl: f64,
+) {
+    let g = Geom::new(rect);
+    let inner = &prof.inner;
+    let pres = inner.pres_at_height(inner.to_msl(h_agl));
+    if !pres.is_finite() {
+        return;
+    }
+    let (u, v) = inner.interp_wind(pres.min(inner.pres[inner.sfc]));
+    if !u.is_finite() || !v.is_finite() {
+        return;
+    }
+    let p = painter.with_clip_rect(rect);
+    let (x, y) = g.uv_to_pix(u, v);
+    let c = g.pt(x, y);
+    p.circle_stroke(c, 5.0, Stroke::new(1.6, style.fg_color));
+    p.circle_stroke(c, 1.0, Stroke::new(2.0, style.fg_color));
+
+    let (wdir, wspd) = inner.interp_vec(pres.min(inner.pres[inner.sfc]));
+    let text = format!(
+        "{:.1} km  {}/{}",
+        h_agl / 1000.0,
+        crate::utils::int2str(wdir),
+        crate::utils::int2str(wspd)
+    );
+    let font = FontId::new(11.0, style.font_regular.clone());
+    let galley = p.layout_no_wrap(text, font, style.fg_color);
+    let mut anchor = c + Vec2::new(8.0, -8.0 - galley.size().y);
+    if anchor.x + galley.size().x > rect.max.x - 2.0 {
+        anchor.x = c.x - 8.0 - galley.size().x;
+    }
+    if anchor.y < rect.min.y + 2.0 {
+        anchor.y = c.y + 8.0;
+    }
+    let bg = Rect::from_min_size(anchor, galley.size() + Vec2::new(4.0, 2.0));
+    p.rect_filled(bg, 0.0, style.bg_color);
+    p.galley(bg.min + Vec2::new(2.0, 1.0), galley, style.fg_color);
+}

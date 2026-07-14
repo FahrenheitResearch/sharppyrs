@@ -31,6 +31,7 @@ pub struct SoundingView<'a> {
     style: SkewTStyle,
     size: Option<Vec2>,
     corner: CornerPanel,
+    interactive: bool,
 }
 
 impl<'a> SoundingView<'a> {
@@ -44,7 +45,15 @@ impl<'a> SoundingView<'a> {
             style: SkewTStyle::default(),
             size: None,
             corner: CornerPanel::default(),
+            interactive: true,
         }
+    }
+
+    /// Enable/disable the hover readout cursor and the linked hodograph
+    /// marker (default: on).
+    pub fn interactive(mut self, on: bool) -> Self {
+        self.interactive = on;
+        self
     }
 
     /// Choose the fourth inset cell (default: the location map; pass
@@ -113,6 +122,7 @@ impl Widget for SoundingView<'_> {
                 .parcel(self.parcel)
                 .title(self.title.clone())
                 .style(self.style.clone())
+                .cursor_readout(self.interactive)
                 .size(skew_rect.size()),
         );
 
@@ -173,6 +183,19 @@ impl Widget for SoundingView<'_> {
         panels::index_board::draw(&painter, board_rect, self.prof, dv, st);
         panels::streamwiseness::draw(&painter, stream_rect, self.prof, dv, st);
         panels::stp::draw(&painter, stp_rect, self.prof, dv, st);
+
+        // Linked cursor: hovering the skew-T highlights the wind at that
+        // height on the hodograph.
+        if self.interactive
+            && let Some(pos) = response.hover_pos()
+            && skew_rect.contains(pos)
+            && let Some(pres) = crate::skewt::hover_pressure(skew_rect, pos)
+        {
+            let h_agl = self.prof.inner.to_agl(self.prof.inner.interp_hght(pres));
+            if h_agl.is_finite() {
+                panels::hodo::cursor_marker(&painter, hodo_rect, self.prof, st, h_agl);
+            }
+        }
 
         response
     }

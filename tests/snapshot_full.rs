@@ -30,6 +30,9 @@ fn render_full_window_png() {
                 });
         });
     harness.run();
+    // Hover mid-skew-T to exercise the readout cursor + linked hodo marker.
+    harness.hover_at(egui::pos2(400.0, 500.0));
+    harness.run();
     let image = harness.render().expect("wgpu render");
     let out = concat!(env!("CARGO_MANIFEST_DIR"), "/target/full_window_snapshot.png");
     image.save(out).expect("save png");
