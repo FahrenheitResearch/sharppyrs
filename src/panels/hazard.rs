@@ -51,8 +51,12 @@ fn classify(prof: &Profile, dv: &DerivedParams, style: &SkewTStyle) -> (&'static
     let ml_lcl = prof.mlpcl.lclhght;
     let ml_cin = prof.mlpcl.bminus;
     let mu_cin = prof.mupcl.bminus;
-    let ebotm = prof.ebotm;
-    let sfc_based_eff = ebotm == 0.0;
+    // Surface-based effective layer. The Python compares `ebotm == 0`
+    // exactly; our interpolation round-trips through log-pressure and can
+    // return ±1e-13 m for a surface-based layer, which silently failed every
+    // TOR gate (soundings read SVR instead of PDS TOR/TOR). Compare with a
+    // millimeter tolerance instead — NaN (no effective layer) stays false.
+    let sfc_based_eff = prof.ebotm.abs() < 1e-3;
     let scp = dv.right_scp;
 
     let pds_tor = ("PDS TOR", Color32::from_rgb(0xFF, 0x00, 0xFF));

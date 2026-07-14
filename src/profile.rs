@@ -164,10 +164,7 @@ impl Profile {
             etopm = inner.to_agl(inner.interp_hght(etop));
             srwind = extras::bunkers_storm_motion(&inner, &mupcl, ebottom);
             if qc(ebotm) && qc(etopm) {
-                right_esrh =
-                    winds::helicity(&inner, ebotm, etopm, srwind.0, srwind.1, -1.0, true)
-                        .map(|h| h.0)
-                        .unwrap_or(f64::NAN);
+                right_esrh = extras::helicity(&inner, ebotm, etopm, srwind.0, srwind.1).0;
             }
         } else {
             srwind = winds::non_parcel_bunkers_motion(&inner)

@@ -403,16 +403,12 @@ impl DerivedParams {
             indices::lapse_rate(inner, 850.0, 500.0, true).unwrap_or(f64::NAN);
         d.lapserate_700_500 =
             indices::lapse_rate(inner, 700.0, 500.0, true).unwrap_or(f64::NAN);
-        // sharpmod `params.lapse_rate(agl=True)`: plain temperature (not
-        // virtual), interpolated linearly in height, over the exact AGL depth.
-        {
-            let sfc_h = inner.sfc_height();
-            let t0 = interp_h(&inner.hght, &inner.tmpc, sfc_h);
-            let t500 = interp_h(&inner.hght, &inner.tmpc, sfc_h + 500.0);
-            let t1000 = interp_h(&inner.hght, &inner.tmpc, sfc_h + 1000.0);
-            d.lapserate_sfc_500m = (t0 - t500) / 0.5;
-            d.lapserate_sfc_1km = (t0 - t1000) / 1.0;
-        }
+        // Virtual-temperature lapse rates, matching the SHARPpy convention of
+        // the other rows in the lapse-rate box. (sharpmod's own SFC-500m /
+        // SFC-1km rows use plain temperature — a quirk deliberately NOT
+        // reproduced; the vtmp values are the meteorologically standard ones.)
+        d.lapserate_sfc_500m = crate::extras::lapse_rate_agl(inner, 0.0, 500.0);
+        d.lapserate_sfc_1km = crate::extras::lapse_rate_agl(inner, 0.0, 1000.0);
 
         // --- DCAPE / downrush -----------------------------------------------
         // Display convention is SHARPpy's (positive J/kg).
@@ -681,12 +677,7 @@ fn shear(inner: &sharprs::Profile, pbot: f64, ptop: f64) -> Comp {
 }
 
 fn helicity(inner: &sharprs::Profile, lower_agl: f64, upper_agl: f64, stu: f64, stv: f64) -> f64 {
-    if !qc(stu) || !qc(stv) {
-        return f64::NAN;
-    }
-    winds::helicity(inner, lower_agl, upper_agl, stu, stv, -1.0, true)
-        .map(|h| h.0)
-        .unwrap_or(f64::NAN)
+    crate::extras::helicity(inner, lower_agl, upper_agl, stu, stv).0
 }
 
 /// Linear interpolation of `field` against `xs` (both may contain NaN; pairs

@@ -142,18 +142,14 @@ fn lapse_rates() {
         TOL_STD,
         "lapserate_700_500",
     );
-    assert_close(
-        d.lapserate_sfc_500m,
-        num(&g["derived_lapserate_sfc_500m"]),
-        TOL_STD,
-        "lapserate_sfc_500m",
-    );
-    assert_close(
-        d.lapserate_sfc_1km,
-        num(&g["derived_lapserate_sfc_1km"]),
-        TOL_STD,
-        "lapserate_sfc_1km",
-    );
+    // DELIBERATE DEVIATION from the sharpmod goldens: sharpmod's
+    // SFC-500m/SFC-1km rows use plain temperature; every other row of the
+    // lapse-rate box (and vendored SHARPpy's params.lapse_rate) uses virtual
+    // temperature. We use vtmp for all rows. Oracle values below are from
+    // vendored SHARPpy `params.lapse_rate(prof, 0, 500/1000, pres=False)`
+    // run on this sounding.
+    assert_close(d.lapserate_sfc_500m, 4.908568889523174, TOL_STD, "lapserate_sfc_500m (vtmp)");
+    assert_close(d.lapserate_sfc_1km, 6.384036612547792, TOL_STD, "lapserate_sfc_1km (vtmp)");
 }
 
 #[test]
