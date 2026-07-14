@@ -26,11 +26,14 @@ pub mod panels;
 pub mod profile;
 pub mod skewt;
 pub mod utils;
+pub mod window;
 
 pub use profile::{ParcelType, Profile, SoundingData};
 pub use sharprs;
 pub use sharprs::params::cape::ParcelResult as Parcel;
 pub use skewt::{SkewT, SkewTStyle};
+pub use window::SoundingView;
+pub use derived::DerivedParams;
 
 /// Name of the bundled regular font family registered by [`install_fonts`].
 pub const FONT_FAMILY: &str = "SpaceGrotesk";
