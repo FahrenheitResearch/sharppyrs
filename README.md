@@ -12,10 +12,14 @@ markers, 0/-20/-30 °C levels, effective inflow layer bracket with ESRH, max
 2-6 km lapse-rate bracket, HGZ band, height markers, omega meter, and
 speed-colored wind barbs — with the bundled Space Grotesk face.
 
-The full `sharptab` numerical core it needs is ported too (Wobus moist
-adiabats, `parcelx` parcel lifting, effective inflow layer, Bunkers storm
-motion, helicity, DCAPE) and validated against the Python implementation's
-output (see `tests/golden.rs`).
+All numerics come from [`sharprs`](https://github.com/FahrenheitResearch/sharprs)
+(the pure-Rust SHARPpy engine) — this crate is rendering-only. The handful of
+things sharprs doesn't define live in `src/extras.rs` (parcel-based Bunkers
+storm motion, the SHARPpy-style forecast-max-temp FCST parcel). The pipeline
+is validated against the Python implementation's output (`tests/golden.rs`);
+known engine-level deviations (fractionally different virtual temperature /
+saturated lifts, FCST parcel layer means, DCAPE trace direction) are
+documented in the test file.
 
 ## Usage
 
@@ -23,7 +27,10 @@ output (see `tests/golden.rs`).
 // once at startup (optional, for the original's Space Grotesk look):
 sharppyrs::install_fonts(&cc.egui_ctx);
 
-// build a profile from raw sounding data (surface upward):
+// from an existing sharprs profile (e.g. your app's calc engine):
+let profile = sharppyrs::Profile::from_sharprs(sharprs_profile);
+
+// ...or from raw sounding data (surface upward):
 let profile = sharppyrs::Profile::new(sharppyrs::SoundingData {
     pres,               // hPa
     hght,               // m MSL

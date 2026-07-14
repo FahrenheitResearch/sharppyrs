@@ -20,17 +20,14 @@
 //! [`SkewTStyle::space_grotesk`] to the widget to select it.
 
 pub mod barbs;
-pub mod constants;
-pub mod interp;
-pub mod params;
+pub mod extras;
 pub mod profile;
 pub mod skewt;
-pub mod thermo;
 pub mod utils;
-pub mod winds;
 
-pub use params::{Parcel, ParcelType};
-pub use profile::{Profile, SoundingData};
+pub use profile::{ParcelType, Profile, SoundingData};
+pub use sharprs;
+pub use sharprs::params::cape::ParcelResult as Parcel;
 pub use skewt::{SkewT, SkewTStyle};
 
 /// Name of the bundled regular font family registered by [`install_fonts`].

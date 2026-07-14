@@ -1,18 +1,37 @@
-//! Sounding profile container (port of `sharppy.sharptab.profile`).
-//!
-//! [`SoundingData`] holds the raw sounding arrays; [`Profile::new`] derives
-//! everything the skew-T needs (virtual temperature, wetbulb, theta-e,
-//! parcels, effective inflow layer, storm motion, ESRH, DCAPE trace, max
-//! lapse rate) exactly like the SHARPpy `ConvectiveProfile`.
+//! Analysis view-model for the Skew-T widget, backed by
+//! [`sharprs`](https://github.com/FahrenheitResearch/sharprs) — the pure-Rust
+//! SHARPpy engine. All numerics live in `sharprs`; this struct just computes
+//! and caches, once, everything the widget draws.
 
-use crate::constants::MISSING;
-use crate::params::{self, Parcel, ParcelType};
-use crate::utils::{qc, vec2comp};
-use crate::{interp, thermo, winds};
+use sharprs::params::cape::{
+    self, ParcelResult, ParcelType as SharprsParcelType, define_parcel, parcelx,
+};
+use sharprs::params::indices;
+use sharprs::profile::StationInfo;
+use sharprs::winds;
 
-/// Raw sounding input. All slices must be the same length, ordered from the
-/// surface upward (decreasing pressure). Missing values may be encoded as
-/// `missing` (default -9999), NaN, or anything non-finite.
+use crate::extras;
+use crate::utils::qc;
+
+/// Which lifted parcel to display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ParcelType {
+    /// Observed surface parcel.
+    Surface,
+    /// Forecast surface parcel.
+    Forecast,
+    /// Most unstable parcel in the lowest 300 hPa (the SHARPpy default the
+    /// original renderer displays).
+    #[default]
+    MostUnstable,
+    /// 100-hPa mean mixed layer parcel.
+    MixedLayer,
+}
+
+/// Raw sounding input, ordered surface upward. Missing values may be encoded
+/// as `missing` (default -9999), NaN, or anything non-finite. Prefer building
+/// a [`sharprs::Profile`] yourself (e.g. via `rustwx-sounding`) and using
+/// [`Profile::from_sharprs`]; this exists for convenience.
 #[derive(Clone, Debug, Default)]
 pub struct SoundingData {
     /// Pressure (hPa).
@@ -35,55 +54,31 @@ pub struct SoundingData {
     pub missing: Option<f64>,
 }
 
-/// A fully analyzed profile ready to hand to the [`crate::SkewT`] widget.
+/// A fully analyzed sounding ready to hand to the [`crate::SkewT`] widget:
+/// the `sharprs` profile plus the parcels, effective inflow layer, storm
+/// motion, ESRH, max lapse rate, and downdraft trace the display needs.
 #[derive(Clone, Debug)]
 pub struct Profile {
-    pub pres: Vec<f64>,
-    pub hght: Vec<f64>,
-    pub tmpc: Vec<f64>,
-    pub dwpc: Vec<f64>,
-    pub wdir: Vec<f64>,
-    pub wspd: Vec<f64>,
-    pub u: Vec<f64>,
-    pub v: Vec<f64>,
-    /// Omega (Pa/s); empty when not supplied.
-    pub omeg: Vec<f64>,
-    /// log10(pres) per level.
-    pub logp: Vec<f64>,
-    /// Virtual temperature (C) per level.
-    pub vtmp: Vec<f64>,
-    /// Wetbulb temperature (C) per level.
-    pub wetbulb: Vec<f64>,
-    /// Potential temperature (C) per level.
-    pub theta: Vec<f64>,
-    /// Equivalent potential temperature (C) per level.
-    pub thetae: Vec<f64>,
-    /// Water vapor mixing ratio (g/kg) per level.
-    pub wvmr: Vec<f64>,
-    /// Index of the surface (lowest level with a valid temperature).
-    pub sfc: usize,
-    /// Index of the profile top (highest level with a valid temperature).
-    pub top: usize,
-    pub latitude: f64,
+    /// The underlying `sharprs` profile (raw + derived arrays).
+    pub inner: sharprs::Profile,
 
     /// Surface-based parcel.
-    pub sfcpcl: Parcel,
+    pub sfcpcl: ParcelResult,
     /// Forecast surface parcel.
-    pub fcstpcl: Parcel,
-    /// Most unstable parcel (lowest 400 hPa).
-    pub mupcl: Parcel,
+    pub fcstpcl: ParcelResult,
+    /// Most unstable parcel (lowest 300 hPa).
+    pub mupcl: ParcelResult,
     /// 100-hPa mixed layer parcel.
-    pub mlpcl: Parcel,
+    pub mlpcl: ParcelResult,
 
-    /// Effective inflow layer bottom pressure (hPa; NaN when absent).
+    /// Effective inflow layer bottom/top pressure (hPa; NaN when absent).
     pub ebottom: f64,
-    /// Effective inflow layer top pressure (hPa; NaN when absent).
     pub etop: f64,
-    /// Effective inflow layer bottom height (m AGL; NaN when absent).
+    /// Effective inflow layer bottom/top height (m AGL; NaN when absent).
     pub ebotm: f64,
-    /// Effective inflow layer top height (m AGL; NaN when absent).
     pub etopm: f64,
-    /// Bunkers storm motion `(right_u, right_v, left_u, left_v)` (kts).
+    /// Bunkers storm motion `(right_u, right_v, left_u, left_v)` (kts),
+    /// parcel-based like the original renderer.
     pub srwind: (f64, f64, f64, f64),
     /// Effective SRH (right mover) (m2/s2).
     pub right_esrh: f64,
@@ -91,160 +86,138 @@ pub struct Profile {
     pub max_lapse_rate_2_6: (f64, f64, f64),
     /// DCAPE (J/kg).
     pub dcape: f64,
-    /// Downdraft parcel trace temperatures (C).
+    /// Downdraft parcel trace (C / hPa).
     pub dpcl_ttrace: Vec<f64>,
-    /// Downdraft parcel trace pressures (hPa).
     pub dpcl_ptrace: Vec<f64>,
 }
 
-fn clean(mut v: Vec<f64>, missing: f64) -> Vec<f64> {
-    for x in v.iter_mut() {
-        if !x.is_finite() || (*x - missing).abs() < 1e-6 || *x <= -9990.0 {
-            *x = f64::NAN;
-        }
-    }
-    v
+fn clean(v: &[f64], missing: f64) -> Vec<f64> {
+    v.iter()
+        .map(|x| {
+            if !x.is_finite() || (*x - missing).abs() < 1e-6 || *x <= -9990.0 {
+                f64::NAN
+            } else {
+                *x
+            }
+        })
+        .collect()
 }
 
 impl Profile {
-    /// Analyze a raw sounding. Returns `None` when the input arrays are
-    /// mismatched in length or no valid temperature level exists.
+    /// Analyze a raw sounding. Returns `None` when the input is unusable.
     pub fn new(data: SoundingData) -> Option<Profile> {
-        let n = data.pres.len();
-        if n == 0
-            || data.hght.len() != n
-            || data.tmpc.len() != n
-            || data.dwpc.len() != n
-            || data.wdir.len() != n
-            || data.wspd.len() != n
-        {
-            return None;
-        }
-        let missing = data.missing.unwrap_or(MISSING);
-        let pres = clean(data.pres, missing);
-        let hght = clean(data.hght, missing);
-        let tmpc = clean(data.tmpc, missing);
-        let dwpc = clean(data.dwpc, missing);
-        let wdir = clean(data.wdir, missing);
-        let wspd = clean(data.wspd, missing);
-        let omeg = match data.omeg {
-            Some(o) if o.len() == n => clean(o, missing),
-            _ => Vec::new(),
-        };
-
-        let sfc = tmpc.iter().position(|t| qc(*t))?;
-        let top = n - 1 - tmpc.iter().rev().position(|t| qc(*t))?;
-
-        let mut u = vec![f64::NAN; n];
-        let mut v = vec![f64::NAN; n];
-        for i in 0..n {
-            if qc(wdir[i]) && qc(wspd[i]) {
-                let (uu, vv) = vec2comp(wdir[i], wspd[i]);
-                u[i] = uu;
-                v[i] = vv;
-            }
-        }
-        let logp: Vec<f64> = pres.iter().map(|p| p.log10()).collect();
-        let mut vtmp = vec![f64::NAN; n];
-        let mut wetbulb = vec![f64::NAN; n];
-        let mut theta_arr = vec![f64::NAN; n];
-        let mut thetae_arr = vec![f64::NAN; n];
-        let mut wvmr = vec![f64::NAN; n];
-        for i in 0..n {
-            if qc(pres[i]) && qc(tmpc[i]) {
-                vtmp[i] = thermo::virtemp(pres[i], tmpc[i], dwpc[i]);
-                // SHARPpy stores the theta / theta-e profiles in Kelvin.
-                theta_arr[i] = thermo::ctok(thermo::theta(pres[i], tmpc[i], 1000.0));
-                if qc(dwpc[i]) {
-                    wetbulb[i] = thermo::wetbulb(pres[i], tmpc[i], dwpc[i]);
-                    thetae_arr[i] = thermo::ctok(thermo::thetae(pres[i], tmpc[i], dwpc[i]));
-                    wvmr[i] = thermo::mixratio(pres[i], dwpc[i]);
-                }
-            }
-        }
-
-        let mut prof = Profile {
-            pres,
-            hght,
-            tmpc,
-            dwpc,
-            wdir,
-            wspd,
-            u,
-            v,
-            omeg,
-            logp,
-            vtmp,
-            wetbulb,
-            theta: theta_arr,
-            thetae: thetae_arr,
-            wvmr,
-            sfc,
-            top,
+        let missing = data.missing.unwrap_or(-9999.0);
+        let omeg = data.omeg.map(|o| clean(&o, missing)).unwrap_or_default();
+        let station = StationInfo {
+            station_id: String::new(),
             latitude: data.latitude.unwrap_or(35.0),
-            sfcpcl: Parcel::default(),
-            fcstpcl: Parcel::default(),
-            mupcl: Parcel::default(),
-            mlpcl: Parcel::default(),
-            ebottom: f64::NAN,
-            etop: f64::NAN,
-            ebotm: f64::NAN,
-            etopm: f64::NAN,
-            srwind: (f64::NAN, f64::NAN, f64::NAN, f64::NAN),
-            right_esrh: f64::NAN,
-            max_lapse_rate_2_6: (f64::NAN, f64::NAN, f64::NAN),
-            dcape: f64::NAN,
-            dpcl_ttrace: Vec::new(),
-            dpcl_ptrace: Vec::new(),
+            longitude: f64::NAN,
+            elevation: f64::NAN,
+            datetime: String::new(),
         };
+        let inner = sharprs::Profile::new(
+            &clean(&data.pres, missing),
+            &clean(&data.hght, missing),
+            &clean(&data.tmpc, missing),
+            &clean(&data.dwpc, missing),
+            &clean(&data.wdir, missing),
+            &clean(&data.wspd, missing),
+            &omeg,
+            station,
+        )
+        .ok()?;
+        Some(Profile::from_sharprs(inner))
+    }
 
-        // Parcels (same set the SPC window lifts).
-        prof.mupcl = params::parcelx(&prof, ParcelType::MostUnstable);
-        prof.sfcpcl = if prof.mupcl.lpl_pres == prof.pres[prof.sfc] {
-            prof.mupcl.clone()
-        } else {
-            params::parcelx(&prof, ParcelType::Surface)
+    /// Analyze an existing [`sharprs::Profile`] (e.g. one produced by
+    /// `rustwx-sounding`).
+    pub fn from_sharprs(inner: sharprs::Profile) -> Profile {
+        // The parcel routines take sharprs's lean cape::Profile (same bridge
+        // sharprs's own compositor uses).
+        let cape_prof = cape::Profile::new(
+            inner.pres.clone(),
+            inner.hght.clone(),
+            inner.tmpc.clone(),
+            inner.dwpc.clone(),
+            inner.sfc,
+        );
+        let lift = |ptype: SharprsParcelType| {
+            parcelx(&cape_prof, &define_parcel(&cape_prof, ptype), None, None)
         };
-        prof.fcstpcl = params::parcelx(&prof, ParcelType::Forecast);
-        prof.mlpcl = params::parcelx(&prof, ParcelType::MixedLayer);
-
-        // Effective inflow layer + kinematics.
-        let (ebot, etop) = params::effective_inflow_layer(&prof, 100.0, -250.0, &prof.mupcl);
-        prof.ebottom = ebot;
-        prof.etop = etop;
-        if qc(ebot) && qc(etop) {
-            prof.ebotm = interp::to_agl(&prof, interp::hght(&prof, ebot));
-            prof.etopm = interp::to_agl(&prof, interp::hght(&prof, etop));
-            prof.srwind = params::bunkers_storm_motion(&prof, &prof.mupcl, prof.ebottom);
-            let (esrh, _, _) = winds::helicity(
-                &prof,
-                prof.ebotm,
-                prof.etopm,
-                prof.srwind.0,
-                prof.srwind.1,
-            );
-            prof.right_esrh = esrh;
+        let mupcl = lift(SharprsParcelType::MostUnstable { depth_hpa: 300.0 });
+        let sfcpcl = if mupcl.pres == inner.pres[inner.sfc] {
+            mupcl.clone()
         } else {
-            prof.srwind = winds::non_parcel_bunkers_motion(&prof);
+            lift(SharprsParcelType::Surface)
+        };
+        let fcstpcl = extras::forecast_parcel(&inner, &cape_prof);
+        let mlpcl = lift(SharprsParcelType::MixedLayer { depth_hpa: 100.0 });
+
+        let (ebottom, etop) =
+            cape::effective_inflow_layer(&cape_prof, 100.0, -250.0, Some(&mupcl));
+        let mut ebotm = f64::NAN;
+        let mut etopm = f64::NAN;
+        let mut right_esrh = f64::NAN;
+        let srwind;
+        if qc(ebottom) && qc(etop) {
+            ebotm = inner.to_agl(inner.interp_hght(ebottom));
+            etopm = inner.to_agl(inner.interp_hght(etop));
+            srwind = extras::bunkers_storm_motion(&inner, &mupcl, ebottom);
+            if qc(ebotm) && qc(etopm) {
+                right_esrh =
+                    winds::helicity(&inner, ebotm, etopm, srwind.0, srwind.1, -1.0, true)
+                        .map(|h| h.0)
+                        .unwrap_or(f64::NAN);
+            }
+        } else {
+            srwind = winds::non_parcel_bunkers_motion(&inner)
+                .unwrap_or((f64::NAN, f64::NAN, f64::NAN, f64::NAN));
         }
 
-        prof.max_lapse_rate_2_6 = params::max_lapse_rate(&prof, 2000.0, 6000.0, 250.0, 2000.0);
+        let mlr = indices::max_lapse_rate(
+            &inner,
+            Some(2000.0),
+            Some(6000.0),
+            Some(250.0),
+            Some(2000.0),
+        );
+        let max_lapse_rate_2_6 = mlr
+            .map(|m| (m.value, m.pbot, m.ptop))
+            .unwrap_or((f64::NAN, f64::NAN, f64::NAN));
 
-        let (dcape_val, dttrace, dptrace) = params::dcape(&prof);
-        prof.dcape = dcape_val;
-        prof.dpcl_ttrace = dttrace;
-        prof.dpcl_ptrace = dptrace;
+        let dc = cape::dcape(&cape_prof);
 
-        Some(prof)
+        Profile {
+            inner,
+            sfcpcl,
+            fcstpcl,
+            mupcl,
+            mlpcl,
+            ebottom,
+            etop,
+            ebotm,
+            etopm,
+            srwind,
+            right_esrh,
+            max_lapse_rate_2_6,
+            dcape: dc.dcape,
+            dpcl_ttrace: dc.ttrace,
+            dpcl_ptrace: dc.ptrace,
+        }
     }
 
     /// The parcel of the given type (already computed).
-    pub fn parcel(&self, kind: ParcelType) -> &Parcel {
+    pub fn parcel(&self, kind: ParcelType) -> &ParcelResult {
         match kind {
             ParcelType::Surface => &self.sfcpcl,
             ParcelType::Forecast => &self.fcstpcl,
             ParcelType::MostUnstable => &self.mupcl,
             ParcelType::MixedLayer => &self.mlpcl,
         }
+    }
+
+    /// Latitude (degrees north) from the station metadata.
+    pub fn latitude(&self) -> f64 {
+        self.inner.station.latitude
     }
 }

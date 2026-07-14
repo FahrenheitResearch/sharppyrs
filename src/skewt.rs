@@ -8,11 +8,12 @@ use egui::{
     Vec2, Widget,
 };
 
+use sharprs::params::cape::ParcelResult;
+use sharprs::thermo;
+
 use crate::barbs::draw_barb;
-use crate::params::{Parcel, ParcelType};
-use crate::profile::Profile;
+use crate::profile::{ParcelType, Profile};
 use crate::utils::{int2str, m2ft, qc};
-use crate::{interp, params, thermo};
 
 /// Colors of the skew-T (defaults match the SPC dark scheme of the original).
 #[derive(Clone, Debug)]
@@ -314,7 +315,8 @@ impl Widget for SkewT<'_> {
 
 impl SkewT<'_> {
     fn plot_omega_on(&self) -> bool {
-        self.plot_omega.unwrap_or(!self.prof.omeg.is_empty())
+        self.plot_omega
+            .unwrap_or_else(|| self.prof.inner.omeg.iter().any(|o| o.is_finite()))
     }
 
     // ------------------------------------------------------------------
@@ -354,7 +356,7 @@ impl SkewT<'_> {
             let mut pts = Vec::new();
             let mut p = g.pmax;
             while p >= g.pmin {
-                let t = (theta + 273.15) / (1000.0 / p).powf(crate::constants::ROCP) - 273.15;
+                let t = (theta + 273.15) / (1000.0 / p).powf(sharprs::constants::ROCP) - 273.15;
                 pts.push(g.pt(g.tmpc_to_pix(t, p), g.pres_to_pix(p)));
                 p -= 10.0;
             }
@@ -473,8 +475,8 @@ impl SkewT<'_> {
             painter,
             g,
             fonts,
-            &prof.wetbulb,
-            &prof.pres,
+            &prof.inner.wetbulb,
+            &prof.inner.pres,
             st.wetbulb_color,
             1.0,
             false,
@@ -485,15 +487,16 @@ impl SkewT<'_> {
             painter,
             g,
             fonts,
-            &prof.tmpc,
-            &prof.pres,
+            &prof.inner.tmpc,
+            &prof.inner.pres,
             st.temp_color,
             3.0,
             false,
             true,
         );
         self.draw_trace(
-            &dp, painter, g, fonts, &prof.vtmp, &prof.pres, st.temp_color, 1.0, true, false,
+            &dp, painter, g, fonts, &prof.inner.vtmp, &prof.inner.pres, st.temp_color, 1.0, true,
+            false,
         );
 
         // Max lapse rate + significant temperature levels.
@@ -506,8 +509,8 @@ impl SkewT<'_> {
             painter,
             g,
             fonts,
-            &prof.dwpc,
-            &prof.pres,
+            &prof.inner.dwpc,
+            &prof.inner.pres,
             st.dewp_color,
             3.0,
             false,
@@ -544,7 +547,7 @@ impl SkewT<'_> {
         self.draw_effective_layer(&dp, g, fonts);
 
         // Omega profile.
-        if self.plot_omega_on() && !prof.omeg.is_empty() {
+        if self.plot_omega_on() {
             self.draw_omega_profile(&dp, g, fonts);
         }
 
@@ -670,8 +673,8 @@ impl SkewT<'_> {
     fn draw_height(&self, dp: &Painter, g: &Geom, fonts: &Fonts, h: f64) {
         let st = &self.style;
         let prof = self.prof;
-        let sfc = interp::hght(prof, prof.pres[prof.sfc]);
-        let p1 = interp::pres(prof, h + sfc);
+        let sfc = prof.inner.interp_hght(prof.inner.pres[prof.inner.sfc]);
+        let p1 = prof.inner.pres_at_height(h + sfc);
         if !p1.is_finite() {
             return;
         }
@@ -689,7 +692,7 @@ impl SkewT<'_> {
         );
     }
 
-    fn draw_parcel_levels(&self, dp: &Painter, g: &Geom, fonts: &Fonts, pcl: &Parcel) {
+    fn draw_parcel_levels(&self, dp: &Painter, g: &Geom, fonts: &Fonts, pcl: &ParcelResult) {
         let st = &self.style;
         let x0 = g.tmpc_to_pix(37.0, 1000.0);
         let x1 = g.tmpc_to_pix(41.0, 1000.0);
@@ -741,7 +744,7 @@ impl SkewT<'_> {
         }
     }
 
-    fn draw_temp_levels(&self, dp: &Painter, g: &Geom, fonts: &Fonts, pcl: &Parcel) {
+    fn draw_temp_levels(&self, dp: &Painter, g: &Geom, fonts: &Fonts, pcl: &ParcelResult) {
         let st = &self.style;
         let x0 = g.tmpc_to_pix(37.0, 1000.0);
         let x1 = g.tmpc_to_pix(41.0, 1000.0);
@@ -776,7 +779,7 @@ impl SkewT<'_> {
         if !qc(pbot) || !qc(ptop) || !(lr >= 4.5) {
             return;
         }
-        let x1 = g.tmpc_to_pix(interp::vtmp(prof, pbot) + 5.0, pbot);
+        let x1 = g.tmpc_to_pix(prof.inner.interp_by_pressure(&prof.inner.vtmp, pbot) + 5.0, pbot);
         let y1 = g.pres_to_pix(pbot);
         let y2 = g.pres_to_pix(ptop);
         dp.rect_filled(
@@ -819,13 +822,13 @@ impl SkewT<'_> {
         let y1 = g.pres_to_pix(pbot);
         let y2 = g.pres_to_pix(ptop);
         let eh = fonts.esrh_height;
-        let sfc = interp::hght(prof, prof.pres[prof.sfc]);
-        let text_bot = if prof.pres[prof.sfc] == pbot {
+        let sfc = prof.inner.interp_hght(prof.inner.pres[prof.inner.sfc]);
+        let text_bot = if prof.inner.pres[prof.inner.sfc] == pbot {
             "SFC".to_string()
         } else {
-            format!("{}m", int2str(interp::hght(prof, pbot) - sfc))
+            format!("{}m", int2str(prof.inner.interp_hght(pbot) - sfc))
         };
-        let text_top = format!("{}m", int2str(interp::hght(prof, ptop) - sfc));
+        let text_top = format!("{}m", int2str(prof.inner.interp_hght(ptop) - sfc));
         dp.rect_filled(g.local_rect(x2, y1 + 4.0, 25.0, eh), 0.0, st.bg_color);
         dp.rect_filled(g.local_rect(x2, y2 - eh, 50.0, eh), 0.0, st.bg_color);
         dp.rect_filled(g.local_rect(x1 - 15.0, y2 - eh, 50.0, eh), 0.0, st.bg_color);
@@ -858,13 +861,13 @@ impl SkewT<'_> {
     }
 
     fn draw_barbs(&self, bp: &Painter, g: &Geom) {
-        let prof = self.prof;
-        let shemis = prof.latitude < 0.0;
+        let prof = &self.prof.inner;
+        let shemis = self.prof.latitude() < 0.0;
         if self.interp_winds {
             let mut p = prof.pres[prof.sfc];
             let ptop = prof.pres[prof.top];
             while p > ptop {
-                let (wdir, wspd) = interp::vec(prof, p);
+                let (wdir, wspd) = prof.interp_vec(p);
                 if qc(wdir) && !wspd.is_nan() && p >= g.pmin {
                     let y = g.pres_to_pix(p);
                     draw_barb(bp, g.pt(g.barbx, y), wdir, wspd, shemis);
@@ -944,20 +947,23 @@ impl SkewT<'_> {
             st.omega_frame_color,
         );
 
-        for i in 0..prof.omeg.len() {
-            if !qc(prof.omeg[i]) || !prof.pres[i].is_finite() || prof.pres[i] < 111.0 {
+        for i in 0..prof.inner.omeg.len() {
+            if !qc(prof.inner.omeg[i])
+                || !prof.inner.pres[i].is_finite()
+                || prof.inner.pres[i] < 111.0
+            {
                 continue;
             }
-            let y = g.pres_to_pix(prof.pres[i]);
-            let (stroke, x2) = if prof.omeg[i] > 0.0 {
+            let y = g.pres_to_pix(prof.inner.pres[i]);
+            let (stroke, x2) = if prof.inner.omeg[i] > 0.0 {
                 (
                     Stroke::new(1.5, st.omega_down_color),
-                    self.omeg_to_pix(g, prof.omeg[i] * 10.0),
+                    self.omeg_to_pix(g, prof.inner.omeg[i] * 10.0),
                 )
-            } else if prof.omeg[i] < 0.0 {
+            } else if prof.inner.omeg[i] < 0.0 {
                 (
                     Stroke::new(1.5, st.omega_up_color),
-                    self.omeg_to_pix(g, prof.omeg[i] * 10.0),
+                    self.omeg_to_pix(g, prof.inner.omeg[i] * 10.0),
                 )
             } else {
                 (Stroke::new(1.0, st.omega_frame_color), x1_0)
@@ -967,7 +973,7 @@ impl SkewT<'_> {
     }
 
     /// CAPE/CIN buoyancy fill (port of `sharpmod.viz.skew.draw_cape_fill`).
-    fn draw_cape_fill(&self, fp: &Painter, g: &Geom, pcl: &Parcel) {
+    fn draw_cape_fill(&self, fp: &Painter, g: &Geom, pcl: &ParcelResult) {
         let st = &self.style;
         let prof = self.prof;
         if pcl.ttrace.is_empty() {
@@ -984,9 +990,9 @@ impl SkewT<'_> {
         }
         // Finite environment pairs sorted by ascending pressure for interp.
         let mut env: Vec<(f64, f64)> = Vec::new();
-        for i in 0..prof.pres.len() {
-            if prof.vtmp[i].is_finite() && prof.pres[i].is_finite() {
-                env.push((prof.pres[i], prof.vtmp[i]));
+        for i in 0..prof.inner.pres.len() {
+            if prof.inner.vtmp[i].is_finite() && prof.inner.pres[i].is_finite() {
+                env.push((prof.inner.pres[i], prof.inner.vtmp[i]));
             }
         }
         if p_tv.len() < 2 || env.len() < 2 {
@@ -1079,8 +1085,10 @@ impl SkewT<'_> {
     fn draw_hgz(&self, painter: &Painter, g: &Geom, fonts: &Fonts) {
         let st = &self.style;
         let prof = self.prof;
-        let p_warm = params::temp_lvl(prof, -10.0);
-        let p_cold = params::temp_lvl(prof, -30.0);
+        let p_warm =
+            sharprs::params::indices::temp_lvl(&prof.inner, -10.0, false).unwrap_or(f64::NAN);
+        let p_cold =
+            sharprs::params::indices::temp_lvl(&prof.inner, -30.0, false).unwrap_or(f64::NAN);
         if !qc(p_warm) || !qc(p_cold) {
             return;
         }
