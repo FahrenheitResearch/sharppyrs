@@ -1,14 +1,11 @@
 //! "Psbl Haz. Type" box: the vendored watch-box look (`sharppy/viz/watch.py`:
 //! centered white title, separator, big centered hazard word) driven by the
-//! SHARPpy-Reimagined hazard classifier ported from
-//! `sharpmod/sharptab/hazard.py` (`classify` + its pinned threshold decision
-//! table), which replaces the legacy `watch_type` logic.
-//!
-//! Inputs are read off the analyzed profile / derived params — MUCAPE
-//! (`prof.mupcl.bplus`), effective SRH (`prof.right_esrh`), EBWD magnitude
-//! (`dv.ebwd`), STP (`dv.stp_cin`, falling back to `dv.stp_fixed`), SCP
-//! (`dv.right_scp`) and SHIP (`dv.ship`) — and never recomputed. Any missing
-//! input degrades to "NONE" instead of a hazard call.
+//! vendored `sharppy.sharptab.watch_type.possible_watch` decision cascade —
+//! the logic behind the reference render's "PDS TOR" readout. Labels and
+//! colors match `watch.py` (`PDS TOR` #ff00ff, `TOR`/`MRGL TOR` #ff0000,
+//! `SVR` #ffff00, `MRGL SVR` #0099cc); only the most severe type is shown.
+//! The FLASH FLOOD / BLIZZARD / heat categories need climatology or precip
+//! type inputs outside this crate's scope and are omitted.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke};
 
@@ -20,51 +17,107 @@ use crate::Profile;
 /// Qt point -> px at the standard 96-dpi factor.
 const PT: f64 = 4.0 / 3.0;
 
-/// The `sharpmod.sharptab.hazard.classify` cascade (labels shortened to the
-/// SPC-style display words of the box). Returns the word and its color.
+/// Port of `watch_type.possible_watch` (right-mover branch): returns the most
+/// severe watch type and its display color.
 fn classify(prof: &Profile, dv: &DerivedParams, style: &SkewTStyle) -> (&'static str, Color32) {
     let none = ("NONE", style.fg_color);
+    let inner = &prof.inner;
 
-    let mucape = prof.mupcl.bplus;
-    let esrh = prof.right_esrh;
-    let ebwd = if qc(dv.ebwd.0) && qc(dv.ebwd.1) {
-        dv.ebwd.0.hypot(dv.ebwd.1)
+    // lr1 = lapse_rate(0, 1000 m AGL) on virtual temperature, like the vendored params.
+    let lr1 =
+        sharprs::params::indices::lapse_rate(inner, 0.0, 1000.0, false).unwrap_or(f64::NAN);
+    let mut stp_eff = dv.stp_cin;
+    let mut stp_fixed = dv.stp_fixed;
+    // right_srw_4_6km: SR wind over the 4-6 km AGL layer, right mover.
+    let p4 = inner.pres_at_height(inner.to_msl(4000.0));
+    let p6 = inner.pres_at_height(inner.to_msl(6000.0));
+    let srw_4_6km = sharprs::winds::sr_wind(inner, p4, p6, prof.srwind.0, prof.srwind.1, -1.0)
+        .map(|(u, v)| u.hypot(v))
+        .unwrap_or(f64::NAN);
+    let mut esrh = prof.right_esrh;
+    let mut srh1km = dv.srh1km;
+    if prof.latitude() < 0.0 {
+        stp_eff = -stp_eff;
+        stp_fixed = -stp_fixed;
+        esrh = -esrh;
+        srh1km = -srh1km;
+    }
+    let sfc_8km_shear = if qc(dv.sfc_8km_shear.0) {
+        dv.sfc_8km_shear.0.hypot(dv.sfc_8km_shear.1)
     } else {
         f64::NAN
     };
-    let stp = if qc(dv.stp_cin) { dv.stp_cin } else { dv.stp_fixed };
+    let sfc_lcl = prof.sfcpcl.lclhght;
+    let ml_lcl = prof.mlpcl.lclhght;
+    let ml_cin = prof.mlpcl.bminus;
+    let mu_cin = prof.mupcl.bminus;
+    let ebotm = prof.ebotm;
+    let sfc_based_eff = ebotm == 0.0;
     let scp = dv.right_scp;
-    let ship = dv.ship;
 
-    // 1. Insufficient data guard -> NONE.
-    if !qc(mucape) || !qc(esrh) || !qc(ebwd) || !qc(stp) || !qc(scp) || !qc(ship) {
-        return none;
+    let pds_tor = ("PDS TOR", Color32::from_rgb(0xFF, 0x00, 0xFF));
+    let tor = ("TOR", Color32::from_rgb(0xFF, 0x00, 0x00));
+    let mrgl_tor = ("MRGL TOR", Color32::from_rgb(0xFF, 0x00, 0x00));
+    let svr = ("SVR", Color32::from_rgb(0xFF, 0xFF, 0x00));
+    let mrgl_svr = ("MRGL SVR", Color32::from_rgb(0x00, 0x99, 0xCC));
+
+    // TOR cascade (NaN comparisons are false, matching masked semantics).
+    if stp_eff >= 3.0
+        && stp_fixed >= 3.0
+        && srh1km >= 200.0
+        && esrh >= 200.0
+        && srw_4_6km >= 15.0
+        && sfc_8km_shear > 45.0
+        && sfc_lcl < 1000.0
+        && ml_lcl < 1200.0
+        && lr1 >= 5.0
+        && ml_cin > -50.0
+        && sfc_based_eff
+    {
+        return pds_tor;
     }
-    // 2. No meaningful convection.
-    if mucape < 25.0 {
-        return none;
+    if (stp_eff >= 3.0 || stp_fixed >= 4.0) && ml_cin > -125.0 && sfc_based_eff {
+        return tor;
     }
-    // 3. Significant-tornado environment.
-    if stp >= 1.0 && scp >= 1.0 && esrh >= 100.0 && ebwd >= 30.0 {
-        return ("TOR", Color32::from_rgb(0xFF, 0x00, 0x00));
+    if (stp_eff >= 1.0 || stp_fixed >= 1.0)
+        && (srw_4_6km >= 15.0 || sfc_8km_shear >= 40.0)
+        && ml_cin > -50.0
+        && sfc_based_eff
+    {
+        return tor;
     }
-    // 4. Organized/rotating storms not meeting the tornado threshold.
-    if scp >= 1.0 || ebwd >= 40.0 {
-        return ("SUPERCELL", Color32::from_rgb(0xFF, 0xFF, 0x00));
+    if (stp_eff >= 1.0 || stp_fixed >= 1.0)
+        && (dv.low_rh + dv.mid_rh) / 2.0 >= 60.0
+        && lr1 >= 5.0
+        && ml_cin > -50.0
+        && sfc_based_eff
+    {
+        return tor;
     }
-    // 5. Significant-hail environment.
-    if ship >= 1.0 {
-        return ("HAIL", Color32::from_rgb(0x00, 0xFF, 0xFF));
+    if (stp_eff >= 1.0 || stp_fixed >= 1.0) && ml_cin > -150.0 && sfc_based_eff {
+        return mrgl_tor;
     }
-    // 6. Damaging-wind environment.
-    if mucape >= 1000.0 && ebwd >= 30.0 {
-        return ("WIND", Color32::from_rgb(0xC8, 0x91, 0x1F));
+    // Vendored operator-precedence quirk kept: the `or` binds the whole
+    // left clause against the (cin && sfc-based) right clause.
+    if (stp_eff >= 0.5 && esrh >= 150.0)
+        || (stp_fixed >= 0.5 && srh1km >= 150.0 && ml_cin > -50.0 && sfc_based_eff)
+    {
+        return mrgl_tor;
     }
-    // 7. Low-end (marginal) severe potential.
-    if mucape >= 500.0 || ebwd >= 20.0 {
-        return ("MRGL", Color32::from_rgb(0xE0, 0xA8, 0x00));
+
+    // SVR cascade.
+    if (stp_fixed >= 1.0 || scp >= 4.0 || stp_eff >= 1.0) && mu_cin >= -50.0 {
+        return svr;
     }
-    // 8. Otherwise.
+    if scp >= 2.0 && (dv.ship >= 1.0 || dv.dcape >= 750.0) && mu_cin >= -50.0 {
+        return svr;
+    }
+    if dv.sig_severe >= 30000.0 && dv.mmp >= 0.6 && mu_cin >= -50.0 {
+        return svr;
+    }
+    if mu_cin >= -75.0 && (dv.wndg >= 0.5 || dv.ship >= 0.5 || scp >= 0.5) {
+        return mrgl_svr;
+    }
     none
 }
 
