@@ -41,7 +41,7 @@ const MAP_FILL: Color32 = Color32::from_rgb(0x05, 0x09, 0x0B);
 const MAP_POINT_COLOR: Color32 = Color32::from_rgb(0xFF, 0xDA, 0x00);
 
 /// Geometry + transforms (port of `backgroundHodo.initUI` with the
-/// SHARPpy-Reimagined zoom: `hodomag = HODO_ZOOM_KTS = 200`).
+/// SHARPpy-Reimagined zoom, widened ~12% per field feedback).
 struct Geom {
     rect: Rect,
     wid: f64,
@@ -56,7 +56,10 @@ impl Geom {
     fn new(rect: Rect) -> Geom {
         let wid = rect.width() as f64;
         let hgt = rect.height() as f64;
-        let hodomag = 200.0;
+        // SHARPpy-Reimagined renders at HODO_ZOOM_KTS = 200; a ~12% wider
+        // window reads better in the app (field feedback), keeping the trace
+        // clear of the ring labels on high-shear soundings.
+        let hodomag = 225.0;
         Geom {
             rect,
             wid,
