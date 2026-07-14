@@ -21,6 +21,7 @@
 
 pub mod barbs;
 pub mod derived;
+pub mod diagnostic_table;
 pub mod extras;
 pub mod panels;
 pub mod profile;
@@ -36,6 +37,10 @@ pub use window::{
     CornerPanel, PanelKind, SoundingLayout, SoundingView, store_layout, stored_layout,
 };
 pub use derived::DerivedParams;
+pub use diagnostic_table::{
+    DiagnosticTableBoard, DiagnosticTablePanel, DiagnosticTablePanelKind, DiagnosticTableRow,
+    DiagnosticTableSection,
+};
 
 /// Name of the bundled regular font family registered by [`install_fonts`].
 pub const FONT_FAMILY: &str = "SpaceGrotesk";

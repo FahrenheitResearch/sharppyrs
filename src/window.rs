@@ -6,6 +6,7 @@
 use egui::{Align2, Rect, Response, Sense, Ui, Vec2, Widget};
 
 use crate::derived::DerivedParams;
+use crate::diagnostic_table::{DiagnosticTableBoard, DiagnosticTablePanelKind};
 use crate::panels;
 
 /// What to draw in the fourth inset cell (upper-right row).
@@ -580,6 +581,7 @@ pub struct SoundingView<'a> {
     corner: CornerPanel,
     interactive: bool,
     layout_id: Option<egui::Id>,
+    diagnostic_tables: Option<&'a DiagnosticTableBoard>,
 }
 
 impl<'a> SoundingView<'a> {
@@ -595,6 +597,7 @@ impl<'a> SoundingView<'a> {
             corner: CornerPanel::default(),
             interactive: true,
             layout_id: None,
+            diagnostic_tables: None,
         }
     }
 
@@ -605,6 +608,14 @@ impl<'a> SoundingView<'a> {
     /// with [`SoundingLayout::to_tokens`].
     pub fn layout_memory_id(mut self, id: egui::Id) -> Self {
         self.layout_id = Some(id);
+        self
+    }
+
+    /// Replace any supplied scalar-table panels with host-resolved rows.
+    /// Omitted panels retain their exact native renderer; without this call
+    /// the complete sounding window is unchanged.
+    pub fn diagnostic_tables(mut self, tables: &'a DiagnosticTableBoard) -> Self {
+        self.diagnostic_tables = Some(tables);
         self
     }
 
@@ -949,7 +960,20 @@ impl Widget for SoundingView<'_> {
             .chain(layout.bottom.iter().zip(bottom_rects.iter()))
             .chain(std::iter::once((&layout.main, &main_rect)))
         {
-            kind.draw(&painter, *r, self.prof, dv, st, zoom);
+            let configured_kind = match kind {
+                PanelKind::ConvectiveIndices => Some(DiagnosticTablePanelKind::Convective),
+                PanelKind::Kinematics => Some(DiagnosticTablePanelKind::Kinematics),
+                PanelKind::SevereIndices => Some(DiagnosticTablePanelKind::Severe),
+                _ => None,
+            };
+            let configured = self.diagnostic_tables.and_then(|tables| {
+                configured_kind.and_then(|configured_kind| tables.panel(configured_kind))
+            });
+            if let Some(panel) = configured {
+                crate::diagnostic_table::draw(&painter, *r, panel, st);
+            } else {
+                kind.draw(&painter, *r, self.prof, dv, st, zoom);
+            }
         }
 
         // Linked cursor: hovering the skew-T highlights the wind at that
