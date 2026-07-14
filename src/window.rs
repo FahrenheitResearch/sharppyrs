@@ -17,6 +17,129 @@ pub enum CornerPanel {
     /// The original SHARPpy "Psbl Haz. Type" watch box.
     HazardType,
 }
+
+/// Every swappable panel of the window. Any cell (except the skew-T) can
+/// hold any of these, or be hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelKind {
+    Speed,
+    Advection,
+    Hodograph,
+    Slinky,
+    ThetaE,
+    SrWinds,
+    LocationMap,
+    HazardType,
+    IndexBoard,
+    Ship,
+    Streamwiseness,
+    Stp,
+    Hidden,
+}
+
+impl PanelKind {
+    pub const ALL: [PanelKind; 13] = [
+        PanelKind::Speed,
+        PanelKind::Advection,
+        PanelKind::Hodograph,
+        PanelKind::Slinky,
+        PanelKind::ThetaE,
+        PanelKind::SrWinds,
+        PanelKind::LocationMap,
+        PanelKind::HazardType,
+        PanelKind::IndexBoard,
+        PanelKind::Ship,
+        PanelKind::Streamwiseness,
+        PanelKind::Stp,
+        PanelKind::Hidden,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PanelKind::Speed => "Wind speed",
+            PanelKind::Advection => "Temp advection",
+            PanelKind::Hodograph => "Hodograph",
+            PanelKind::Slinky => "Storm slinky",
+            PanelKind::ThetaE => "Theta-E v. pres",
+            PanelKind::SrWinds => "SR wind v. height",
+            PanelKind::LocationMap => "Location map",
+            PanelKind::HazardType => "Psbl haz. type",
+            PanelKind::IndexBoard => "Index board",
+            PanelKind::Ship => "SHIP box",
+            PanelKind::Streamwiseness => "Streamwiseness",
+            PanelKind::Stp => "Effective STP",
+            PanelKind::Hidden => "(hidden)",
+        }
+    }
+
+    fn draw(
+        self,
+        painter: &egui::Painter,
+        rect: Rect,
+        prof: &Profile,
+        dv: &DerivedParams,
+        st: &SkewTStyle,
+        hodo_zoom: f64,
+    ) {
+        match self {
+            PanelKind::Speed => panels::speed::draw(painter, rect, prof, dv, st),
+            PanelKind::Advection => panels::advection::draw(painter, rect, prof, dv, st),
+            PanelKind::Hodograph => {
+                panels::hodo::draw_zoomed(painter, rect, prof, dv, st, hodo_zoom)
+            }
+            PanelKind::Slinky => panels::slinky::draw(painter, rect, prof, dv, st),
+            PanelKind::ThetaE => panels::thetae::draw(painter, rect, prof, dv, st),
+            PanelKind::SrWinds => panels::srwinds::draw(painter, rect, prof, dv, st),
+            PanelKind::LocationMap => panels::locator::draw(painter, rect, prof, dv, st),
+            PanelKind::HazardType => panels::hazard::draw(painter, rect, prof, dv, st),
+            PanelKind::IndexBoard => panels::index_board::draw(painter, rect, prof, dv, st),
+            PanelKind::Ship => panels::ship_inset::draw(painter, rect, prof, dv, st),
+            PanelKind::Streamwiseness => {
+                panels::streamwiseness::draw(painter, rect, prof, dv, st)
+            }
+            PanelKind::Stp => panels::stp::draw(painter, rect, prof, dv, st),
+            PanelKind::Hidden => {}
+        }
+    }
+}
+
+/// User-adjustable window layout: which panel lives in each cell of the SPC
+/// grid (the skew-T cell is fixed), plus the hodograph zoom. Kept in egui
+/// memory per widget id; edited in-app via the gear button.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundingLayout {
+    /// The two narrow strips right of the skew-T.
+    pub strips: [PanelKind; 2],
+    /// The large upper-right cell.
+    pub main: PanelKind,
+    /// The four inset cells under it.
+    pub insets: [PanelKind; 4],
+    /// The three bottom-band cells.
+    pub bottom: [PanelKind; 3],
+    /// Hodograph window width (kts across).
+    pub hodo_zoom_kts: f64,
+}
+
+impl Default for SoundingLayout {
+    fn default() -> Self {
+        SoundingLayout {
+            strips: [PanelKind::Speed, PanelKind::Advection],
+            main: PanelKind::Hodograph,
+            insets: [
+                PanelKind::Slinky,
+                PanelKind::ThetaE,
+                PanelKind::SrWinds,
+                PanelKind::LocationMap,
+            ],
+            bottom: [
+                PanelKind::IndexBoard,
+                PanelKind::Streamwiseness,
+                PanelKind::Stp,
+            ],
+            hodo_zoom_kts: panels::hodo::DEFAULT_ZOOM_KTS,
+        }
+    }
+}
 use crate::profile::{ParcelType, Profile};
 use crate::skewt::{SkewT, SkewTStyle};
 
@@ -148,54 +271,155 @@ impl Widget for SoundingView<'_> {
                 Vec2::new(cs * colw, rs * rowh),
             )
         };
-        let speed_rect = cell(0.0, 0.0, 3.0, 11.0);
-        let adv_rect = cell(3.0, 0.0, 2.0, 11.0);
-        let hodo_rect = cell(5.0, 0.0, 24.0, 8.0);
-        let slinky_rect = cell(5.0, 8.0, 6.0, 3.0);
-        let thetae_rect = cell(11.0, 8.0, 6.0, 3.0);
-        let srwinds_rect = cell(17.0, 8.0, 6.0, 3.0);
-        let hazard_rect = cell(23.0, 8.0, 6.0, 3.0);
-
-        let dv = self.derived;
-        let st = &self.style;
-        panels::speed::draw(&painter, speed_rect, self.prof, dv, st);
-        panels::advection::draw(&painter, adv_rect, self.prof, dv, st);
-        panels::hodo::draw(&painter, hodo_rect, self.prof, dv, st);
-        panels::slinky::draw(&painter, slinky_rect, self.prof, dv, st);
-        panels::thetae::draw(&painter, thetae_rect, self.prof, dv, st);
-        panels::srwinds::draw(&painter, srwinds_rect, self.prof, dv, st);
-        match self.corner {
-            CornerPanel::LocationMap => {
-                panels::locator::draw(&painter, hazard_rect, self.prof, dv, st)
-            }
-            CornerPanel::HazardType => {
-                panels::hazard::draw(&painter, hazard_rect, self.prof, dv, st)
-            }
-        }
-
-        // --- Bottom band: index board / streamwiseness / STP (61/14/25%). ---
+        let strip_rects = [cell(0.0, 0.0, 3.0, 11.0), cell(3.0, 0.0, 2.0, 11.0)];
+        let main_rect = cell(5.0, 0.0, 24.0, 8.0);
+        let inset_rects = [
+            cell(5.0, 8.0, 6.0, 3.0),
+            cell(11.0, 8.0, 6.0, 3.0),
+            cell(17.0, 8.0, 6.0, 3.0),
+            cell(23.0, 8.0, 6.0, 3.0),
+        ];
+        // --- Bottom band cells (61/14/25%). ---
         let band = Rect::from_min_max(egui::pos2(rect.min.x, band_top), rect.max);
         let x1 = band.min.x + band.width() * 0.61;
         let x2 = band.min.x + band.width() * 0.75;
-        let board_rect = Rect::from_min_max(band.min, egui::pos2(x1, band.max.y));
-        let stream_rect = Rect::from_min_max(egui::pos2(x1, band.min.y), egui::pos2(x2, band.max.y));
-        let stp_rect = Rect::from_min_max(egui::pos2(x2, band.min.y), band.max);
-        panels::index_board::draw(&painter, board_rect, self.prof, dv, st);
-        panels::streamwiseness::draw(&painter, stream_rect, self.prof, dv, st);
-        panels::stp::draw(&painter, stp_rect, self.prof, dv, st);
+        let bottom_rects = [
+            Rect::from_min_max(band.min, egui::pos2(x1, band.max.y)),
+            Rect::from_min_max(egui::pos2(x1, band.min.y), egui::pos2(x2, band.max.y)),
+            Rect::from_min_max(egui::pos2(x2, band.min.y), band.max),
+        ];
+
+        // --- Layout state (per-widget, edited in-app via the gear). ---
+        let id = ui.id().with("sounding_layout");
+        let mut layout: SoundingLayout =
+            ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or_else(|| {
+                let mut l = SoundingLayout::default();
+                if self.corner == CornerPanel::HazardType {
+                    l.insets[3] = PanelKind::HazardType;
+                }
+                l
+            });
+
+        // Scroll-to-zoom over the hodograph cell.
+        if self.interactive
+            && let Some(pos) = response.hover_pos()
+            && main_rect.contains(pos)
+            && layout.main == PanelKind::Hodograph
+        {
+            let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+            if scroll.abs() > 0.0 {
+                let factor = (-scroll as f64 / 400.0).exp();
+                layout.hodo_zoom_kts = (layout.hodo_zoom_kts * factor).clamp(80.0, 500.0);
+            }
+        }
+
+        let dv = self.derived;
+        let st = &self.style;
+        let zoom = layout.hodo_zoom_kts;
+        for (kind, r) in layout
+            .strips
+            .iter()
+            .zip(strip_rects.iter())
+            .chain(layout.insets.iter().zip(inset_rects.iter()))
+            .chain(layout.bottom.iter().zip(bottom_rects.iter()))
+            .chain(std::iter::once((&layout.main, &main_rect)))
+        {
+            kind.draw(&painter, *r, self.prof, dv, st, zoom);
+        }
 
         // Linked cursor: hovering the skew-T highlights the wind at that
-        // height on the hodograph.
+        // height on the hodograph (wherever it currently lives).
+        let hodo_cell = std::iter::once((&layout.main, &main_rect))
+            .chain(layout.insets.iter().zip(inset_rects.iter()))
+            .chain(layout.strips.iter().zip(strip_rects.iter()))
+            .chain(layout.bottom.iter().zip(bottom_rects.iter()))
+            .find(|(k, _)| **k == PanelKind::Hodograph)
+            .map(|(_, r)| *r);
         if self.interactive
             && let Some(pos) = response.hover_pos()
             && skew_rect.contains(pos)
             && let Some(pres) = crate::skewt::hover_pressure(skew_rect, pos)
+            && let Some(hodo_rect) = hodo_cell
         {
             let h_agl = self.prof.inner.to_agl(self.prof.inner.interp_hght(pres));
             if h_agl.is_finite() {
-                panels::hodo::cursor_marker(&painter, hodo_rect, self.prof, st, h_agl);
+                panels::hodo::cursor_marker(&painter, hodo_rect, self.prof, st, h_agl, zoom);
             }
         }
+
+        // --- Layout editor: gear button toggles per-cell pickers. ---
+        if self.interactive {
+            let edit_id = ui.id().with("sounding_layout_edit");
+            let mut editing: bool = ui.ctx().data_mut(|d| d.get_temp(edit_id)).unwrap_or(false);
+            let gear_rect = Rect::from_min_size(
+                egui::pos2(rect.max.x - 24.0, band_top - 22.0),
+                Vec2::new(22.0, 20.0),
+            );
+            if ui
+                .put(gear_rect, egui::Button::new("\u{2699}").small())
+                .on_hover_text("Edit panel layout")
+                .clicked()
+            {
+                editing = !editing;
+            }
+            if editing {
+                let mut slots: Vec<(&mut PanelKind, Rect)> = Vec::new();
+                let SoundingLayout {
+                    strips,
+                    main,
+                    insets,
+                    bottom,
+                    ..
+                } = &mut layout;
+                for (k, r) in strips.iter_mut().zip(strip_rects.iter()) {
+                    slots.push((k, *r));
+                }
+                slots.push((main, main_rect));
+                for (k, r) in insets.iter_mut().zip(inset_rects.iter()) {
+                    slots.push((k, *r));
+                }
+                for (k, r) in bottom.iter_mut().zip(bottom_rects.iter()) {
+                    slots.push((k, *r));
+                }
+                for (i, (kind, r)) in slots.into_iter().enumerate() {
+                    painter.rect_stroke(
+                        r.shrink(1.0),
+                        0.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x04, 0xDB, 0xD8)),
+                        egui::StrokeKind::Inside,
+                    );
+                    let combo_rect = Rect::from_min_size(
+                        r.min + Vec2::new(4.0, 4.0),
+                        Vec2::new((r.width() - 8.0).min(150.0), 18.0),
+                    );
+                    let mut combo_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(combo_rect)
+                            .layout(egui::Layout::default()),
+                    );
+                    egui::ComboBox::from_id_salt(id.with(i))
+                        .selected_text(kind.label())
+                        .width(combo_rect.width())
+                        .show_ui(&mut combo_ui, |ui| {
+                            for k in PanelKind::ALL {
+                                ui.selectable_value(kind, k, k.label());
+                            }
+                        });
+                }
+                let reset_rect = Rect::from_min_size(
+                    egui::pos2(rect.max.x - 84.0, band_top - 22.0),
+                    Vec2::new(56.0, 20.0),
+                );
+                if ui
+                    .put(reset_rect, egui::Button::new("reset").small())
+                    .clicked()
+                {
+                    layout = SoundingLayout::default();
+                }
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(edit_id, editing));
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(id, layout));
 
         response
     }

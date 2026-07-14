@@ -1191,7 +1191,7 @@ impl SkewT<'_> {
         let td = inner.interp_dwpc(pres);
         let font = FontId::new(11.0, st.font_regular.clone());
 
-        let mut boxed = |pos: Pos2, anchor: Align2, text: String, color: Color32| {
+        let boxed = |pos: Pos2, anchor: Align2, text: String, color: Color32| {
             let galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
             let r = anchor.anchor_size(pos, galley.size() + Vec2::new(6.0, 2.0));
             painter.rect_filled(r, 0.0, st.bg_color);

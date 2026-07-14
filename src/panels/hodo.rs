@@ -42,6 +42,10 @@ const MAP_POINT_COLOR: Color32 = Color32::from_rgb(0xFF, 0xDA, 0x00);
 
 /// Geometry + transforms (port of `backgroundHodo.initUI` with the
 /// SHARPpy-Reimagined zoom, widened ~12% per field feedback).
+/// Default hodograph window (kts across); SHARPpy-Reimagined uses 200,
+/// widened 25% per field feedback. Scroll-zoomable in `SoundingView`.
+pub(crate) const DEFAULT_ZOOM_KTS: f64 = 250.0;
+
 struct Geom {
     rect: Rect,
     wid: f64,
@@ -54,12 +58,13 @@ struct Geom {
 
 impl Geom {
     fn new(rect: Rect) -> Geom {
+        Geom::with_zoom(rect, DEFAULT_ZOOM_KTS)
+    }
+
+    fn with_zoom(rect: Rect, zoom_kts: f64) -> Geom {
         let wid = rect.width() as f64;
         let hgt = rect.height() as f64;
-        // SHARPpy-Reimagined renders at HODO_ZOOM_KTS = 200; a ~12% wider
-        // window reads better in the app (field feedback), keeping the trace
-        // clear of the ring labels on high-shear soundings.
-        let hodomag = 225.0;
+        let hodomag = zoom_kts.clamp(80.0, 500.0);
         Geom {
             rect,
             wid,
@@ -95,6 +100,10 @@ struct Fonts {
 impl Fonts {
     fn new(hgt: f64, style: &SkewTStyle) -> Fonts {
         const PT: f64 = 4.0 / 3.0;
+
+/// Default hodograph window (kts across); SHARPpy-Reimagined uses 200,
+/// widened 25% per field feedback. Scroll-zoomable in `SoundingView`.
+pub(crate) const DEFAULT_ZOOM_KTS: f64 = 250.0;
         let fsize = 7.0;
         let bold = style.font_bold.clone();
         let label_pt = fsize + hgt * 0.0045;
@@ -110,11 +119,23 @@ impl Fonts {
 
 /// Draw this panel into `rect`.
 pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, style: &SkewTStyle) {
+    draw_zoomed(painter, rect, prof, dv, style, DEFAULT_ZOOM_KTS)
+}
+
+/// `draw` with an explicit hodograph window width in knots.
+pub(crate) fn draw_zoomed(
+    painter: &Painter,
+    rect: Rect,
+    prof: &Profile,
+    dv: &DerivedParams,
+    style: &SkewTStyle,
+    zoom_kts: f64,
+) {
     if rect.width() < 50.0 || rect.height() < 50.0 {
         return;
     }
     let p = painter.with_clip_rect(rect);
-    let g = Geom::new(rect);
+    let g = Geom::with_zoom(rect, zoom_kts);
     let fonts = Fonts::new(g.hgt, style);
 
     p.rect_filled(rect, 0.0, style.bg_color);
@@ -529,8 +550,9 @@ pub(crate) fn cursor_marker(
     prof: &Profile,
     style: &SkewTStyle,
     h_agl: f64,
+    zoom_kts: f64,
 ) {
-    let g = Geom::new(rect);
+    let g = Geom::with_zoom(rect, zoom_kts);
     let inner = &prof.inner;
     let pres = inner.pres_at_height(inner.to_msl(h_agl));
     if !pres.is_finite() {
