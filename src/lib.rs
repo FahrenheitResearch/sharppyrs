@@ -1,0 +1,65 @@
+//! # sharppyrs
+//!
+//! A Rust/egui port of the SPC-style Skew-T sounding plot from
+//! [SHARPpy-Reimagined-vRust](https://github.com/FahrenheitResearch/SHARPpy-Reimagined-vRust)
+//! (itself built on [SHARPpy](https://github.com/sharppy/SHARPpy)).
+//!
+//! ```no_run
+//! # fn demo(ui: &mut egui::Ui, data: sharppyrs::SoundingData) {
+//! let profile = sharppyrs::Profile::new(data).unwrap();
+//! ui.add(
+//!     sharppyrs::SkewT::new(&profile)
+//!         .title("HRRR 2026-06-25 06z F018  Valid: Thu 2026-06-26 00z")
+//!         .style(sharppyrs::SkewTStyle::space_grotesk()),
+//! );
+//! # }
+//! ```
+//!
+//! Call [`install_fonts`] once at startup to register the bundled
+//! Space Grotesk font (the face the original renderer uses); pass
+//! [`SkewTStyle::space_grotesk`] to the widget to select it.
+
+pub mod barbs;
+pub mod constants;
+pub mod interp;
+pub mod params;
+pub mod profile;
+pub mod skewt;
+pub mod thermo;
+pub mod utils;
+pub mod winds;
+
+pub use params::{Parcel, ParcelType};
+pub use profile::{Profile, SoundingData};
+pub use skewt::{SkewT, SkewTStyle};
+
+/// Name of the bundled regular font family registered by [`install_fonts`].
+pub const FONT_FAMILY: &str = "SpaceGrotesk";
+/// Name of the bundled bold font family registered by [`install_fonts`].
+pub const FONT_FAMILY_BOLD: &str = "SpaceGrotesk-Bold";
+
+/// Register the bundled Space Grotesk fonts (OFL licensed) with egui, adding
+/// the [`FONT_FAMILY`] / [`FONT_FAMILY_BOLD`] families while keeping the
+/// existing defaults untouched.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "SpaceGrotesk-Regular".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/SpaceGrotesk-Regular.ttf"))
+            .into(),
+    );
+    fonts.font_data.insert(
+        "SpaceGrotesk-Bold".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/SpaceGrotesk-Bold.ttf"))
+            .into(),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(FONT_FAMILY.into()),
+        vec!["SpaceGrotesk-Regular".to_owned()],
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(FONT_FAMILY_BOLD.into()),
+        vec!["SpaceGrotesk-Bold".to_owned()],
+    );
+    ctx.set_fonts(fonts);
+}
