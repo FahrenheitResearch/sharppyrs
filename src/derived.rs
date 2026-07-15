@@ -1040,29 +1040,25 @@ fn ec_sr_wind(hgts: &[f64], u: &[f64], v: &[f64], su: f64, sv: f64) -> f64 {
 
 /// NCAPE dilution integral, clamped at >= 0 — ecape-rs `compute_ncape_reference`.
 fn ec_ncape(h: &[f64], p_pa: &[f64], t_k: &[f64], qv: &[f64], lfc_m: f64, el_m: f64) -> f64 {
+    ec_ncape_with_saturation(h, p_pa, t_k, qv, lfc_m, el_m, ec_r_sat)
+}
+
+fn ec_ncape_with_saturation<F>(
+    h: &[f64],
+    p_pa: &[f64],
+    t_k: &[f64],
+    qv: &[f64],
+    lfc_m: f64,
+    el_m: f64,
+    mut saturation_mixing_ratio: F,
+) -> f64
+where
+    F: FnMut(f64, f64) -> f64,
+{
     if el_m <= lfc_m {
         return 0.0;
     }
-    let n = h.len();
-    let mse0: Vec<f64> = (0..n).map(|i| ec_mse(h[i], t_k[i], qv[i])).collect();
-    let mse0_star: Vec<f64> = (0..n)
-        .map(|i| {
-            let rsat = ec_r_sat(t_k[i], p_pa[i]);
-            ec_mse(h[i], t_k[i], rsat / (1.0 + rsat))
-        })
-        .collect();
-    let mut mse0bar = vec![0.0; n];
-    mse0bar[0] = mse0[0];
-    for iz in 1..n {
-        let mut sum = 0.0;
-        for j in 0..iz {
-            sum += (mse0[j] + mse0[j + 1]) * (h[j + 1] - h[j]);
-        }
-        mse0bar[iz] = 0.5 * sum / (h[iz] - h[0]);
-    }
-    let int_arg: Vec<f64> = (0..n)
-        .map(|i| -(EC_G / (EC_CPD * t_k[i])) * (mse0bar[i] - mse0_star[i]))
-        .collect();
+
     let nearest = |target: f64| -> usize {
         let mut best = 0usize;
         let mut bd = f64::INFINITY;
@@ -1080,11 +1076,96 @@ fn ec_ncape(h: &[f64], p_pa: &[f64], t_k: &[f64], qv: &[f64], lfc_m: f64, el_m: 
     if ind_el <= ind_lfc + 1 {
         return 0.0;
     }
+
+    // Only the surface-through-EL layer contributes to NCAPE. Upper-
+    // stratospheric temperatures can be physically valid while liquid-water
+    // saturation is undefined because saturation vapor pressure meets or
+    // exceeds total pressure. Do not evaluate those unused levels.
+    let n = ind_el + 1;
+    if p_pa.len() < n || t_k.len() < n || qv.len() < n {
+        return f64::NAN;
+    }
+    let mse0: Vec<f64> = (0..n).map(|i| ec_mse(h[i], t_k[i], qv[i])).collect();
+    let mse0_star: Vec<f64> = (0..n)
+        .map(|i| {
+            let rsat = saturation_mixing_ratio(t_k[i], p_pa[i]);
+            ec_mse(h[i], t_k[i], rsat / (1.0 + rsat))
+        })
+        .collect();
+    let mut mse0bar = vec![0.0; n];
+    mse0bar[0] = mse0[0];
+    for iz in 1..n {
+        let mut sum = 0.0;
+        for j in 0..iz {
+            sum += (mse0[j] + mse0[j + 1]) * (h[j + 1] - h[j]);
+        }
+        mse0bar[iz] = 0.5 * sum / (h[iz] - h[0]);
+    }
+    let int_arg: Vec<f64> = (0..n)
+        .map(|i| -(EC_G / (EC_CPD * t_k[i])) * (mse0bar[i] - mse0_star[i]))
+        .collect();
     let mut ncape = 0.0;
     for i in ind_lfc..(ind_el - 1) {
         ncape += (0.5 * int_arg[i] + 0.5 * int_arg[i + 1]) * (h[i + 1] - h[i]);
     }
     ncape.max(0.0)
+}
+
+#[cfg(test)]
+mod ecape_ncape_tests {
+    use super::{ec_ncape, ec_ncape_with_saturation, ec_r_sat};
+
+    const HEIGHT_M: [f64; 5] = [0.0, 1_000.0, 2_000.0, 3_000.0, 49_420.0];
+    const PRESSURE_PA: [f64; 5] = [100_000.0, 90_000.0, 80_000.0, 70_000.0, 100.0];
+    const TEMPERATURE_K: [f64; 5] = [300.0, 294.0, 288.0, 282.0, 278.35];
+    const SPECIFIC_HUMIDITY: [f64; 5] = [0.014, 0.010, 0.007, 0.004, 0.000_001];
+
+    #[test]
+    fn ncape_never_evaluates_saturation_above_equilibrium_level() {
+        let mut evaluated_pressures = Vec::new();
+        let value = ec_ncape_with_saturation(
+            &HEIGHT_M,
+            &PRESSURE_PA,
+            &TEMPERATURE_K,
+            &SPECIFIC_HUMIDITY,
+            1_000.0,
+            3_000.0,
+            |temperature, pressure| {
+                assert!(
+                    pressure > 100.0,
+                    "upper-stratospheric saturation must not be evaluated"
+                );
+                evaluated_pressures.push(pressure);
+                ec_r_sat(temperature, pressure)
+            },
+        );
+
+        assert!(value.is_finite());
+        assert_eq!(evaluated_pressures, PRESSURE_PA[..=3]);
+    }
+
+    #[test]
+    fn upper_stratospheric_level_does_not_change_ncape() {
+        let baseline = ec_ncape(
+            &HEIGHT_M[..4],
+            &PRESSURE_PA[..4],
+            &TEMPERATURE_K[..4],
+            &SPECIFIC_HUMIDITY[..4],
+            1_000.0,
+            3_000.0,
+        );
+        let extended = ec_ncape(
+            &HEIGHT_M,
+            &PRESSURE_PA,
+            &TEMPERATURE_K,
+            &SPECIFIC_HUMIDITY,
+            1_000.0,
+            3_000.0,
+        );
+
+        assert!(baseline.is_finite());
+        assert_eq!(extended, baseline);
+    }
 }
 
 /// Entrainment parameter psi (ecape-rs `calc_psi`, sigma = 1.1).
