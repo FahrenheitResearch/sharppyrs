@@ -6,7 +6,9 @@
 use egui::{Align2, Rect, Response, Sense, Ui, Vec2, Widget};
 
 use crate::derived::DerivedParams;
-use crate::diagnostic_table::{DiagnosticTableBoard, DiagnosticTablePanelKind};
+use crate::diagnostic_table::{
+    DiagnosticTableBoard, DiagnosticTablePanelKind, NativeDiagnosticPatchBoard,
+};
 use crate::panels;
 
 /// What to draw in the fourth inset cell (upper-right row).
@@ -582,6 +584,7 @@ pub struct SoundingView<'a> {
     interactive: bool,
     layout_id: Option<egui::Id>,
     diagnostic_tables: Option<&'a DiagnosticTableBoard>,
+    native_diagnostic_patches: Option<&'a NativeDiagnosticPatchBoard>,
 }
 
 impl<'a> SoundingView<'a> {
@@ -598,6 +601,7 @@ impl<'a> SoundingView<'a> {
             interactive: true,
             layout_id: None,
             diagnostic_tables: None,
+            native_diagnostic_patches: None,
         }
     }
 
@@ -616,6 +620,16 @@ impl<'a> SoundingView<'a> {
     /// the complete sounding window is unchanged.
     pub fn diagnostic_tables(mut self, tables: &'a DiagnosticTableBoard) -> Self {
         self.diagnostic_tables = Some(tables);
+        self
+    }
+
+    /// Apply sparse, display-ready replacements to native diagnostic cells
+    /// without replacing the surrounding native table geometry.
+    pub fn native_diagnostic_patches(
+        mut self,
+        patches: &'a NativeDiagnosticPatchBoard,
+    ) -> Self {
+        self.native_diagnostic_patches = Some(patches);
         self
     }
 
@@ -971,6 +985,36 @@ impl Widget for SoundingView<'_> {
             });
             if let Some(panel) = configured {
                 crate::diagnostic_table::draw(&painter, *r, panel, st);
+            } else if let Some(patches) = self.native_diagnostic_patches {
+                match kind {
+                    PanelKind::ConvectiveIndices
+                        if patches.has_panel(DiagnosticTablePanelKind::Convective) =>
+                    {
+                        panels::index_board::draw_convective_patched(
+                            &painter, *r, self.prof, dv, st, patches,
+                        );
+                    }
+                    PanelKind::Kinematics
+                        if patches.has_panel(DiagnosticTablePanelKind::Kinematics) =>
+                    {
+                        panels::index_board::draw_kinematics_patched(
+                            &painter, *r, self.prof, dv, st, patches,
+                        );
+                    }
+                    PanelKind::SevereIndices
+                        if patches.has_panel(DiagnosticTablePanelKind::Severe) =>
+                    {
+                        panels::index_board::draw_indices_patched(
+                            &painter, *r, self.prof, dv, st, patches,
+                        );
+                    }
+                    PanelKind::IndexBoard if !patches.patches.is_empty() => {
+                        panels::index_board::draw_patched(
+                            &painter, *r, self.prof, dv, st, patches,
+                        );
+                    }
+                    _ => kind.draw(&painter, *r, self.prof, dv, st, zoom),
+                }
             } else {
                 kind.draw(&painter, *r, self.prof, dv, st, zoom);
             }

@@ -39,7 +39,8 @@ pub use window::{
 pub use derived::DerivedParams;
 pub use diagnostic_table::{
     DiagnosticTableBoard, DiagnosticTablePanel, DiagnosticTablePanelKind, DiagnosticTableRow,
-    DiagnosticTableSection,
+    DiagnosticTableSection, NativeDiagnosticPatch, NativeDiagnosticPatchBoard,
+    NativeDiagnosticSlotPatch, native_diagnostic_slot_ids,
 };
 
 /// Name of the bundled regular font family registered by [`install_fonts`].

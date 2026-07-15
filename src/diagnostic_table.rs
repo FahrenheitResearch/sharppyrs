@@ -118,6 +118,200 @@ impl DiagnosticTableBoard {
     }
 }
 
+/// A display-ready replacement for one scalar/vector readout in the native
+/// SHARPpy table geometry, or an intentional empty cell.
+///
+/// This is deliberately separate from [`DiagnosticTableBoard`]: a native
+/// patch changes only the addressed cell and never converts the surrounding
+/// parcel matrix, kinematic matrix, or inline rows into the generic table
+/// renderer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativeDiagnosticSlotPatch {
+    Replace(DiagnosticTableRow),
+    Blank,
+}
+
+/// One native table-cell patch, addressed by its stable host diagnostic ID.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeDiagnosticPatch {
+    pub panel: DiagnosticTablePanelKind,
+    pub slot_id: String,
+    pub value: NativeDiagnosticSlotPatch,
+}
+
+impl NativeDiagnosticPatch {
+    pub fn replace(
+        panel: DiagnosticTablePanelKind,
+        slot_id: impl Into<String>,
+        row: DiagnosticTableRow,
+    ) -> Self {
+        Self {
+            panel,
+            slot_id: slot_id.into(),
+            value: NativeDiagnosticSlotPatch::Replace(row),
+        }
+    }
+
+    pub fn blank(panel: DiagnosticTablePanelKind, slot_id: impl Into<String>) -> Self {
+        Self {
+            panel,
+            slot_id: slot_id.into(),
+            value: NativeDiagnosticSlotPatch::Blank,
+        }
+    }
+}
+
+/// Sparse, host-supplied edits to the native diagnostic tables.
+///
+/// Duplicate keys are resolved last-wins so a host can cheaply layer a live
+/// edit over a persisted patch set without rebuilding the vector.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeDiagnosticPatchBoard {
+    pub patches: Vec<NativeDiagnosticPatch>,
+}
+
+impl NativeDiagnosticPatchBoard {
+    pub fn patch(
+        &self,
+        panel: DiagnosticTablePanelKind,
+        slot_id: &str,
+    ) -> Option<&NativeDiagnosticSlotPatch> {
+        self.patches
+            .iter()
+            .rev()
+            .find(|patch| patch.panel == panel && patch.slot_id == slot_id)
+            .map(|patch| &patch.value)
+    }
+
+    pub fn has_panel(&self, panel: DiagnosticTablePanelKind) -> bool {
+        self.patches.iter().any(|patch| patch.panel == panel)
+    }
+}
+
+const NATIVE_CONVECTIVE_SLOT_IDS: [&str; 52] = [
+    "parcel.sfc.cape",
+    "parcel.sfc.cinh",
+    "parcel.sfc.lcl",
+    "parcel.sfc.li",
+    "parcel.sfc.lfc",
+    "parcel.sfc.el",
+    "parcel.ml.cape",
+    "parcel.ml.cinh",
+    "parcel.ml.lcl",
+    "parcel.ml.li",
+    "parcel.ml.lfc",
+    "parcel.ml.el",
+    "parcel.fcst.cape",
+    "parcel.fcst.cinh",
+    "parcel.fcst.lcl",
+    "parcel.fcst.li",
+    "parcel.fcst.lfc",
+    "parcel.fcst.el",
+    "parcel.mu.cape",
+    "parcel.mu.cinh",
+    "parcel.mu.lcl",
+    "parcel.mu.li",
+    "parcel.mu.lfc",
+    "parcel.mu.el",
+    "thermo.pwat",
+    "thermo.mean_mixr",
+    "thermo.low_rh",
+    "thermo.mid_rh",
+    "thermo.dcape",
+    "thermo.downrush_temp",
+    "thermo.k_index",
+    "thermo.total_totals",
+    "thermo.convective_temp",
+    "thermo.max_temp",
+    "thermo.esp",
+    "thermo.mmp",
+    "thermo.wndg",
+    "thermo.tei",
+    "thermo.cape_0_3km",
+    "thermo.cape_0_6km",
+    "thermo.mburst",
+    "thermo.sig_severe",
+    "lapse.sfc_500m",
+    "lapse.sfc_1km",
+    "lapse.sfc_3km",
+    "lapse.850_500",
+    "lapse.700_500",
+    "composite.scp_right",
+    "composite.stp_effective",
+    "composite.stp_fixed",
+    "composite.ship",
+    "composite.dcp",
+];
+
+const NATIVE_KINEMATICS_SLOT_IDS: [&str; 36] = [
+    "kin.sfc_500m.srh",
+    "kin.sfc_1km.srh",
+    "kin.sfc_3km.srh",
+    "kin.effective.srh",
+    "kin.sfc_500m.shear",
+    "kin.sfc_1km.shear",
+    "kin.sfc_3km.shear",
+    "kin.effective.shear",
+    "kin.sfc_6km.shear",
+    "kin.sfc_8km.shear",
+    "kin.lcl_el.shear",
+    "kin.ebwd.shear",
+    "kin.sfc_500m.mean_wind",
+    "kin.sfc_1km.mean_wind",
+    "kin.sfc_3km.mean_wind",
+    "kin.effective.mean_wind",
+    "kin.sfc_6km.mean_wind",
+    "kin.sfc_8km.mean_wind",
+    "kin.lcl_el.mean_wind",
+    "kin.ebwd.mean_wind",
+    "kin.sfc_500m.srw",
+    "kin.sfc_1km.srw",
+    "kin.sfc_3km.srw",
+    "kin.effective.srw",
+    "kin.sfc_6km.srw",
+    "kin.sfc_8km.srw",
+    "kin.lcl_el.srw",
+    "kin.ebwd.srw",
+    "kin.brn_shear",
+    "kin.srw_4_6km",
+    "kin.bunkers_right",
+    "kin.bunkers_left",
+    "kin.corfidi_down",
+    "kin.corfidi_up",
+    "kin.wind_1km",
+    "kin.wind_6km",
+];
+
+const NATIVE_SEVERE_SLOT_IDS: [&str; 14] = [
+    "severe.ehi_0_1km",
+    "severe.ehi_0_3km",
+    "severe.vgp",
+    "severe.peskov",
+    "severe.mcs",
+    "severe.sweat",
+    "severe.moshe",
+    "severe.lrghail",
+    "severe.hgz_cape",
+    "severe.nstp",
+    "severe.ncape",
+    "severe.ecape",
+    "severe.lscp",
+    "severe.wbz_height",
+];
+
+/// Stable IDs for every replaceable scalar/vector slot in a native panel.
+/// The complete inventory is 102 slots (52 convective, 36 kinematic, and 14
+/// severe). IDs are shared with BowEcho's diagnostic registry.
+pub fn native_diagnostic_slot_ids(
+    panel: DiagnosticTablePanelKind,
+) -> &'static [&'static str] {
+    match panel {
+        DiagnosticTablePanelKind::Convective => &NATIVE_CONVECTIVE_SLOT_IDS,
+        DiagnosticTablePanelKind::Kinematics => &NATIVE_KINEMATICS_SLOT_IDS,
+        DiagnosticTablePanelKind::Severe => &NATIVE_SEVERE_SLOT_IDS,
+    }
+}
+
 fn rows_per_column(section: &DiagnosticTableSection) -> usize {
     let columns = section.columns.clamp(1, 4);
     section.rows.len().div_ceil(columns).max(1)
@@ -328,5 +522,43 @@ mod tests {
         let row = DiagnosticTableRow::new("CAPE", "--").unit("J/kg");
         assert_eq!(row.value, "--");
         assert_eq!(row.unit, "J/kg");
+    }
+
+    #[test]
+    fn native_patch_lookup_is_last_wins_and_preserves_blank() {
+        let panel = DiagnosticTablePanelKind::Convective;
+        let board = NativeDiagnosticPatchBoard {
+            patches: vec![
+                NativeDiagnosticPatch::replace(
+                    panel,
+                    "thermo.pwat",
+                    DiagnosticTableRow::new("PWAT", "1.25").unit("in"),
+                ),
+                NativeDiagnosticPatch::blank(panel, "thermo.pwat"),
+            ],
+        };
+        assert_eq!(
+            board.patch(panel, "thermo.pwat"),
+            Some(&NativeDiagnosticSlotPatch::Blank)
+        );
+        assert!(board.has_panel(panel));
+        assert!(!board.has_panel(DiagnosticTablePanelKind::Severe));
+    }
+
+    #[test]
+    fn native_slot_ids_are_complete_and_globally_unique() {
+        let mut ids = [
+            DiagnosticTablePanelKind::Convective,
+            DiagnosticTablePanelKind::Kinematics,
+            DiagnosticTablePanelKind::Severe,
+        ]
+        .into_iter()
+        .flat_map(native_diagnostic_slot_ids)
+        .copied()
+        .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 102);
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 102);
     }
 }
