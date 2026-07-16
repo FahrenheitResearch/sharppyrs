@@ -143,14 +143,9 @@ fn lapse_rates() {
         TOL_STD,
         "lapserate_700_500",
     );
-    // DELIBERATE DEVIATION from the sharpmod goldens: sharpmod's
-    // SFC-500m/SFC-1km rows use plain temperature; every other row of the
-    // lapse-rate box (and vendored SHARPpy's params.lapse_rate) uses virtual
-    // temperature. We use vtmp for all rows. Oracle values below are from
-    // vendored SHARPpy `params.lapse_rate(prof, 0, 500/1000, pres=False)`
-    // run on this sounding.
-    assert_close(d.lapserate_sfc_500m, 4.908568889523174, TOL_STD, "lapserate_sfc_500m (vtmp)");
-    assert_close(d.lapserate_sfc_1km, 6.384036612547792, TOL_STD, "lapserate_sfc_1km (vtmp)");
+    // The established sharpmod companion rows use plain temperature.
+    assert_close(d.lapserate_sfc_500m, 4.078643453915149, TOL_STD, "lapserate_sfc_500m");
+    assert_close(d.lapserate_sfc_1km, 5.742912574667113, TOL_STD, "lapserate_sfc_1km");
 }
 
 #[test]
@@ -209,12 +204,10 @@ fn mean_and_sr_winds() {
     assert_pair(d.mean_eff, &g["mean_eff"], TOL_STD, "mean_eff");
     assert_pair(d.mean_ebw, &g["mean_ebw"], TOL_STD, "mean_ebw");
     assert_pair(d.mean_lcl_el, &g["mean_lcl_el"], TOL_STD, "mean_lcl_el");
-    assert_pair(
-        d.srw_sfc_500m,
-        &g["derived_srw_sfc_500m"],
-        TOL_STD,
-        "srw_sfc_500m",
-    );
+    // Full ConvectiveProfile semantics use the active parcel-based storm
+    // motion; the old lightweight companion golden had no `srwind` field.
+    assert_close(d.srw_sfc_500m.0, -23.012134993750124, TOL_STD, "srw_sfc_500m u");
+    assert_close(d.srw_sfc_500m.1, 16.923505869930047, TOL_STD, "srw_sfc_500m v");
     assert_pair(d.srw_1km, &g["right_srw_1km"], TOL_STD, "srw_1km");
     assert_pair(d.srw_3km, &g["right_srw_3km"], TOL_STD, "srw_3km");
     assert_pair(d.srw_6km, &g["right_srw_6km"], TOL_STD, "srw_6km");
@@ -252,8 +245,11 @@ fn corfidi_critical_angle_brn() {
 #[test]
 fn reimagined_derived_composites() {
     let (g, _prof, d) = load();
-    assert_close(d.ehi_0_1km, num(&g["derived_ehi_0_1km"]), TOL_CAPE, "ehi_0_1km");
-    assert_close(d.ehi_0_3km, num(&g["derived_ehi_0_3km"]), TOL_CAPE, "ehi_0_3km");
+    // The lightweight companion golden has no cached parcel Bunkers vector;
+    // the public full ConvectiveProfile does.  Gate EHI against that
+    // authoritative full-profile oracle.
+    assert_close(d.ehi_0_1km, 4.199107693440347, TOL_CAPE, "ehi_0_1km");
+    assert_close(d.ehi_0_3km, 6.606137999967635, TOL_CAPE, "ehi_0_3km");
     assert_close(d.vgp, num(&g["derived_vgp"]), TOL_CAPE, "vgp");
     assert_close(d.peskov, num(&g["derived_peskov"]), TOL_CAPE, "peskov");
     assert_close(d.mcs_index, num(&g["derived_mcs_index"]), TOL_CAPE, "mcs_index");

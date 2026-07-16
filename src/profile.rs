@@ -3,9 +3,7 @@
 //! SHARPpy engine. All numerics live in `sharprs`; this struct just computes
 //! and caches, once, everything the widget draws.
 
-use sharprs::params::cape::{
-    self, ParcelResult, ParcelType as SharprsParcelType, define_parcel, parcelx,
-};
+use sharprs::params::cape::{self, ParcelResult, ParcelType as SharprsParcelType, define_parcel};
 use sharprs::params::indices;
 use sharprs::profile::StationInfo;
 use sharprs::winds;
@@ -172,18 +170,15 @@ impl Profile {
 
     /// Analyze an existing [`sharprs::Profile`] (e.g. one produced by
     /// `rustwx-sounding`).
-    pub fn from_sharprs(inner: sharprs::Profile) -> Profile {
+    pub fn from_sharprs(mut inner: sharprs::Profile) -> Profile {
+        // Establish SHARPpy's public thermodynamic contract before any parcel
+        // or derived calculation consumes sharprs' eager cached arrays.
+        extras::normalize_sharppy_thermodynamics(&mut inner);
         // The parcel routines take sharprs's lean cape::Profile (same bridge
         // sharprs's own compositor uses).
-        let cape_prof = cape::Profile::new(
-            inner.pres.clone(),
-            inner.hght.clone(),
-            inner.tmpc.clone(),
-            inner.dwpc.clone(),
-            inner.sfc,
-        );
+        let cape_prof = extras::cape_profile(&inner);
         let lift = |ptype: SharprsParcelType| {
-            parcelx(&cape_prof, &define_parcel(&cape_prof, ptype), None, None)
+            extras::parcelx_sharppy(&cape_prof, &define_parcel(&cape_prof, ptype), None, None)
         };
         let mupcl = lift(SharprsParcelType::MostUnstable { depth_hpa: 300.0 });
         let sfcpcl = if mupcl.pres == inner.pres[inner.sfc] {
@@ -194,8 +189,7 @@ impl Profile {
         let fcstpcl = extras::forecast_parcel(&inner, &cape_prof);
         let mlpcl = lift(SharprsParcelType::MixedLayer { depth_hpa: 100.0 });
 
-        let (ebottom, etop) =
-            cape::effective_inflow_layer(&cape_prof, 100.0, -250.0, Some(&mupcl));
+        let (ebottom, etop) = effective_inflow_layer(&cape_prof, &mupcl);
         let mut ebotm = f64::NAN;
         let mut etopm = f64::NAN;
         let mut right_esrh = f64::NAN;
@@ -208,8 +202,12 @@ impl Profile {
                 right_esrh = extras::helicity(&inner, ebotm, etopm, srwind.0, srwind.1).0;
             }
         } else {
-            srwind = winds::non_parcel_bunkers_motion(&inner)
-                .unwrap_or((f64::NAN, f64::NAN, f64::NAN, f64::NAN));
+            srwind = winds::non_parcel_bunkers_motion(&inner).unwrap_or((
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+                f64::NAN,
+            ));
         }
 
         let mlr = indices::max_lapse_rate(
@@ -219,11 +217,11 @@ impl Profile {
             Some(250.0),
             Some(2000.0),
         );
-        let max_lapse_rate_2_6 = mlr
-            .map(|m| (m.value, m.pbot, m.ptop))
-            .unwrap_or((f64::NAN, f64::NAN, f64::NAN));
+        let max_lapse_rate_2_6 =
+            mlr.map(|m| (m.value, m.pbot, m.ptop))
+                .unwrap_or((f64::NAN, f64::NAN, f64::NAN));
 
-        let dc = cape::dcape(&cape_prof);
+        let dc = extras::sharppy_dcape(&cape_prof);
 
         Profile {
             inner,
@@ -269,6 +267,85 @@ impl Profile {
     pub fn latitude(&self) -> f64 {
         self.inner.station.latitude
     }
+}
+
+/// SHARPpy-compatible effective-inflow search using the fast CAPE/CIN solver.
+///
+/// This mirrors SHARPpy's `effective_inflow_layer`, which intentionally uses
+/// its stripped-down `cape()` routine for each candidate.  `cape_profile()`
+/// has already installed SHARPpy's dry-temperature virtual-temperature
+/// fallback, so sparse BUFKIT upper moisture no longer makes the fast solver
+/// return a false zero.
+fn effective_inflow_layer(prof: &cape::Profile, mupcl: &ParcelResult) -> (f64, f64) {
+    const MIN_CAPE: f64 = 100.0;
+    const MIN_CIN: f64 = -250.0;
+
+    if !mupcl.bplus.is_finite()
+        || mupcl.bplus == 0.0
+        || mupcl.bplus < MIN_CAPE
+        || !mupcl.bminus.is_finite()
+        || mupcl.bminus <= MIN_CIN
+    {
+        return (f64::NAN, f64::NAN);
+    }
+
+    let mut bottom_index = None;
+    for i in prof.sfc..prof.top {
+        if !prof.tmpc[i].is_finite() || !prof.dwpc[i].is_finite() {
+            continue;
+        }
+        let level = cape::LiftedParcelLevel {
+            pres: prof.pres[i],
+            tmpc: prof.tmpc[i],
+            dwpc: prof.dwpc[i],
+            parcel_type: SharprsParcelType::UserDefined {
+                pres: prof.pres[i],
+                tmpc: prof.tmpc[i],
+                dwpc: prof.dwpc[i],
+            },
+        };
+        let parcel = cape::cape(prof, &level, None, None);
+        if parcel.bplus >= MIN_CAPE && parcel.bminus > MIN_CIN {
+            bottom_index = Some(i);
+            break;
+        }
+    }
+
+    let Some(bottom_index) = bottom_index else {
+        return (f64::NAN, f64::NAN);
+    };
+    let pbot = prof.pres[bottom_index];
+
+    for i in (bottom_index + 1)..prof.top {
+        if !prof.tmpc[i].is_finite() || !prof.dwpc[i].is_finite() {
+            continue;
+        }
+        let level = cape::LiftedParcelLevel {
+            pres: prof.pres[i],
+            tmpc: prof.tmpc[i],
+            dwpc: prof.dwpc[i],
+            parcel_type: SharprsParcelType::UserDefined {
+                pres: prof.pres[i],
+                tmpc: prof.tmpc[i],
+                dwpc: prof.dwpc[i],
+            },
+        };
+        let parcel = cape::cape(prof, &level, None, None);
+        if parcel.bplus < MIN_CAPE || parcel.bminus <= MIN_CIN {
+            let mut previous = i - 1;
+            while previous > bottom_index
+                && !prof.tmpc[previous].is_finite()
+                && !prof.dwpc[previous].is_finite()
+            {
+                previous -= 1;
+            }
+            return (pbot, prof.pres[previous].min(pbot));
+        }
+    }
+
+    // This deliberately follows SHARPpy: if no failing level is found before
+    // the profile top, the effective top remains undefined.
+    (pbot, f64::NAN)
 }
 
 #[cfg(test)]
