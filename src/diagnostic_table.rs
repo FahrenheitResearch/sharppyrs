@@ -188,31 +188,35 @@ impl NativeDiagnosticPatchBoard {
     }
 }
 
-const NATIVE_CONVECTIVE_SLOT_IDS: [&str; 52] = [
+const NATIVE_CONVECTIVE_SLOT_IDS: [&str; 56] = [
     "parcel.sfc.cape",
     "parcel.sfc.cinh",
     "parcel.sfc.lcl",
     "parcel.sfc.li",
     "parcel.sfc.lfc",
     "parcel.sfc.el",
+    "parcel.sfc.mpl",
     "parcel.ml.cape",
     "parcel.ml.cinh",
     "parcel.ml.lcl",
     "parcel.ml.li",
     "parcel.ml.lfc",
     "parcel.ml.el",
+    "parcel.ml.mpl",
     "parcel.fcst.cape",
     "parcel.fcst.cinh",
     "parcel.fcst.lcl",
     "parcel.fcst.li",
     "parcel.fcst.lfc",
     "parcel.fcst.el",
+    "parcel.fcst.mpl",
     "parcel.mu.cape",
     "parcel.mu.cinh",
     "parcel.mu.lcl",
     "parcel.mu.li",
     "parcel.mu.lfc",
     "parcel.mu.el",
+    "parcel.mu.mpl",
     "thermo.pwat",
     "thermo.mean_mixr",
     "thermo.low_rh",
@@ -300,7 +304,7 @@ const NATIVE_SEVERE_SLOT_IDS: [&str; 14] = [
 ];
 
 /// Stable IDs for every replaceable scalar/vector slot in a native panel.
-/// The complete inventory is 102 slots (52 convective, 36 kinematic, and 14
+/// The complete inventory is 106 slots (56 convective, 36 kinematic, and 14
 /// severe). IDs are shared with BowEcho's diagnostic registry.
 pub fn native_diagnostic_slot_ids(
     panel: DiagnosticTablePanelKind,
@@ -556,9 +560,23 @@ mod tests {
         .flat_map(native_diagnostic_slot_ids)
         .copied()
         .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 102);
+        assert_eq!(ids.len(), 106);
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 102);
+        assert_eq!(ids.len(), 106);
+    }
+
+    #[test]
+    fn native_parcel_mpl_slots_follow_each_equilibrium_level() {
+        let ids = native_diagnostic_slot_ids(DiagnosticTablePanelKind::Convective);
+        for parcel in ["sfc", "ml", "fcst", "mu"] {
+            let el = format!("parcel.{parcel}.el");
+            let mpl = format!("parcel.{parcel}.mpl");
+            let el_index = ids
+                .iter()
+                .position(|id| *id == el.as_str())
+                .expect("EL slot");
+            assert_eq!(ids.get(el_index + 1), Some(&mpl.as_str()));
+        }
     }
 }

@@ -1,7 +1,7 @@
 //! SHARPpy-Reimagined bottom index board — port of
 //! `sharpmod/viz/index_board.py` laid out across THREE columns:
 //!
-//! 1. **Convective** — parcel table (PCL/CAPE/CINH/LCL/LI/LFC/EL for
+//! 1. **Convective** — parcel table (PCL/CAPE/CINH/LCL/LI/LFC/EL/MPL for
 //!    SFC/ML/FCST/MU), the thermo stats block (3 sub-columns), and the
 //!    lapse-rate box paired with the colored Severe Weather Composite box
 //!    (Supercell Comp / STP(cin) / STP(fix) / SHIP / Derecho Comp).
@@ -32,6 +32,8 @@ use crate::Profile;
 
 /// The string drawn in place of an unavailable value.
 const MISS: &str = "--";
+const PARCEL_MATRIX_HEADERS: [&str; 8] =
+    ["PCL", "CAPE", "CINH", "LCL", "LI", "LFC", "EL", "MPL"];
 
 // Board palette (fixed hues from index_board.py / colors.py).
 const RULE: Color32 = Color32::from_rgb(0x8A, 0x8A, 0x8A);
@@ -779,8 +781,8 @@ impl Board<'_> {
         let rh = self.rh;
         let (x, w) = (r.left(), r.width());
         let mut y = r.top();
-        let cw = w / 7.0;
-        for (i, c) in ["PCL", "CAPE", "CINH", "LCL", "LI", "LFC", "EL"].iter().enumerate() {
+        let cw = w / 8.0;
+        for (i, c) in PARCEL_MATRIX_HEADERS.iter().enumerate() {
             self.text(p, self.cell(x + i as f32 * cw, y, cw), c, &self.hf, HDR, HA::Center);
         }
         y += rh + 1.0;
@@ -798,7 +800,7 @@ impl Board<'_> {
             let cape = fin(pcl.bplus);
             let has_cape = cape.is_some_and(|c| c > 0.0);
             // CAPE/CINH/LI escalate only when the parcel has positive CAPE;
-            // LCL, LFC, EL and the parcel name stay neutral.
+            // LCL, LFC, EL, MPL and the parcel name stay neutral.
             let (cape_c, cinh_c, li_c) = if has_cape {
                 (
                     gradient(cape, 1000.0, 2500.0, 4000.0, true, fg),
@@ -809,13 +811,14 @@ impl Board<'_> {
                 (fg, fg, fg)
             };
             self.text(p, self.cell(x, y, cw), name, &self.rf, fg, HA::Center);
-            let cells: [(&str, &str, String, Color32); 6] = [
+            let cells: [(&str, &str, String, Color32); 7] = [
                 ("cape", "CAPE", int2str(pcl.bplus), cape_c),
                 ("cinh", "CINH", int2str(pcl.bminus), cinh_c),
                 ("lcl", "LCL", int2str(pcl.lclhght), fg),
                 ("li", "LI", int2str(pcl.li5), li_c),
                 ("lfc", "LFC", int2str(pcl.lfchght), fg),
                 ("el", "EL", int2str(pcl.elhght), fg),
+                ("mpl", "MPL", int2str(pcl.mplhght), fg),
             ];
             for (i, (field, heading, value, color)) in cells.iter().enumerate() {
                 let slot_id = format!("parcel.{parcel_id}.{field}");
@@ -1545,6 +1548,12 @@ fn build_barb(wdir: f64, wspd: f64, shemis: bool, scale: f32) -> BarbPath {
 mod typography_tests {
     use super::*;
     use crate::skewt::SoundingFontPreset;
+
+    #[test]
+    fn parcel_matrix_places_maximum_parcel_level_after_equilibrium_level() {
+        assert_eq!(PARCEL_MATRIX_HEADERS.len(), 8);
+        assert_eq!(&PARCEL_MATRIX_HEADERS[6..], &["EL", "MPL"]);
+    }
 
     #[test]
     fn shared_typography_reaches_index_board_regular_and_bold_cells() {
