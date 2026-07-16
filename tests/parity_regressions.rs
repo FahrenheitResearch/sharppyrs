@@ -14,7 +14,7 @@ fn close(actual: f64, expected: f64, tolerance: f64, label: &str) {
 }
 
 fn bufkit_case(stim: u32) -> SoundingData {
-    let raw = include_str!("../../../examples/soundings/hrrr_kbvo_20260625_06z.buf");
+    let raw = include_str!("testdata/hrrr_kbvo_20260625_06z.buf");
     let marker = format!("STIM = {stim}");
     let block = raw
         .split(&marker)
