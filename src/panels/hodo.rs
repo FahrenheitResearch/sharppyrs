@@ -54,6 +54,10 @@ struct Geom {
     centery: f64,
     /// Pixels per knot.
     scale: f64,
+    /// The window width `scale` was built from: the caller's `zoom_kts` after
+    /// clamping to the interactive range, so `geometry` can report the number
+    /// actually drawn rather than the number asked for.
+    zoom_kts: f64,
 }
 
 impl Geom {
@@ -85,6 +89,7 @@ impl Geom {
             centerx: wid / 2.0,
             centery: hgt / 2.0,
             scale: wid / hodomag,
+            zoom_kts: hodomag,
         }
     }
 
@@ -99,6 +104,43 @@ impl Geom {
     /// Widget-local -> screen position.
     fn pt(&self, x: f64, y: f64) -> Pos2 {
         Pos2::new(self.rect.min.x + x as f32, self.rect.min.y + y as f32)
+    }
+}
+
+/// The hodograph plot geometry, enough for a client holding only an image to
+/// map a pixel back to a wind. Units are KNOTS throughout:
+///
+/// ```text
+/// u = (x - center.x) / px_per_kt;  v = (center.y - y) / px_per_kt
+/// spd = hypot(u, v);  dir = (atan2(u, v).to_degrees() + 180) rem_euclid 360
+/// ```
+///
+/// (that `dir` is `sharprs::profile::comp2vec`.)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HodoGeometry {
+    /// The drawn area: the centered square inside the cell, NOT the cell — the
+    /// px-per-kt scale is isotropic and comes from the square's width, so a
+    /// readout referred to the cell would be offset (see [`Geom::plot_rect`]).
+    pub plot: Rect,
+    /// Screen position of the (u, v) = (0, 0) origin.
+    pub center: Pos2,
+    /// Pixels per knot, the same on both axes.
+    pub px_per_kt: f64,
+    /// Window width in knots actually used: the requested zoom clamped to the
+    /// interactive 80–500 kt range.
+    pub zoom_kts: f64,
+}
+
+/// The geometry of a hodograph drawn into `cell` at `zoom_kts` — the same
+/// numbers [`draw_zoomed`] plots with, for hosts that render headless and must
+/// explain a pixel.
+pub fn geometry(cell: Rect, zoom_kts: f64) -> HodoGeometry {
+    let g = Geom::with_zoom(cell, zoom_kts);
+    HodoGeometry {
+        plot: g.rect,
+        center: g.pt(g.centerx, g.centery),
+        px_per_kt: g.scale,
+        zoom_kts: g.zoom_kts,
     }
 }
 

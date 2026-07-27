@@ -313,6 +313,14 @@ impl Geom {
         self.brx - ((scl1 - t) / self.xrange) * (self.brx - self.lpad)
     }
 
+    /// Widget-local px -> temperature (C); exact inverse of `tmpc_to_pix`
+    /// (`y` carries the pressure, so no pressure argument is needed).
+    fn pix_to_tmpc(&self, x: f64, y: f64) -> f64 {
+        let scl1 = self.brtmpc
+            - ((self.bry - y) / (self.bry - self.tpad)) * self.yrange;
+        scl1 - (self.brx - x) / (self.brx - self.lpad) * self.xrange
+    }
+
     /// Widget-local -> screen position.
     fn pt(&self, x: f64, y: f64) -> Pos2 {
         Pos2::new(
@@ -324,6 +332,70 @@ impl Geom {
     /// Screen-space rect from widget-local coordinates.
     fn local_rect(&self, x: f64, y: f64, w: f64, h: f64) -> Rect {
         Rect::from_min_size(self.pt(x, y), Vec2::new(w as f32, h as f32))
+    }
+
+    /// The isotherm/trace box in screen coordinates: `lpad..brx` by
+    /// `tpad..bry`, i.e. everything left of the wind-barb column.
+    fn plot_rect(&self) -> Rect {
+        Rect::from_min_max(self.pt(self.lpad, self.tpad), self.pt(self.brx, self.bry))
+    }
+
+    /// The framed area in screen coordinates — `plot_rect` widened to the full
+    /// panel width so the wind-barb column is included. This is exactly the
+    /// region `hover_pressure` accepts.
+    fn hover_rect(&self) -> Rect {
+        Rect::from_min_max(
+            self.pt(self.lpad, self.tpad),
+            self.pt(self.wid + self.rpad, self.bry),
+        )
+    }
+}
+
+/// The skew-T plot geometry and scaling constants, enough for a client holding
+/// only an image to map a pixel back to a (pressure, temperature) pair —
+/// see [`hover_pressure`] / [`hover_tmpc`] for the reference implementation:
+///
+/// ```text
+/// f = (plot.max.y - y) / plot.height()
+/// p = exp(ln(pmax) - f * (ln(pmax) - ln(pmin)))
+/// T = brtmpc - f * yrange - xrange * (plot.max.x - x) / plot.width()
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkewTGeometry {
+    /// The isotherm/trace box: where the skewed temperature axis is valid.
+    pub plot: Rect,
+    /// The larger region a pressure readout is valid over: `plot` plus the
+    /// wind-barb column. Matches [`hover_pressure`]'s accept/reject boundary,
+    /// so a host reports the same hoverable area the widget reacts to.
+    pub hover: Rect,
+    /// Screen x of the centre of the wind-barb column.
+    pub barb_x: f32,
+    /// Pressure (hPa) at the bottom of `plot`.
+    pub pmax: f64,
+    /// Pressure (hPa) at the top of `plot`.
+    pub pmin: f64,
+    /// Temperature (C) at the bottom-right corner of `plot`.
+    pub brtmpc: f64,
+    /// Temperature span (C) across `plot` at a fixed pressure.
+    pub xrange: f64,
+    /// Temperature offset (C) the skew adds between the bottom and top of
+    /// `plot` (`tan(xskew) * xrange`).
+    pub yrange: f64,
+}
+
+/// The geometry of a skew-T drawn into `rect` — the same numbers the widget
+/// itself plots with, for hosts that render headless and must explain a pixel.
+pub fn geometry(rect: Rect) -> SkewTGeometry {
+    let g = Geom::new(rect);
+    SkewTGeometry {
+        plot: g.plot_rect(),
+        hover: g.hover_rect(),
+        barb_x: g.pt(g.barbx, 0.0).x,
+        pmax: g.pmax,
+        pmin: g.pmin,
+        brtmpc: g.brtmpc,
+        xrange: g.xrange,
+        yrange: g.yrange,
     }
 }
 
@@ -404,8 +476,7 @@ impl SkewT<'_> {
 
         // Grid clipped to the plot area (the original lets it spill under the
         // barb strip and then blanks that margin; same net result).
-        let plot_clip = Rect::from_min_max(g.pt(g.lpad, g.tpad), g.pt(g.brx, g.bry));
-        let gp = painter.with_clip_rect(plot_clip);
+        let gp = painter.with_clip_rect(g.plot_rect());
 
         // Isotherms.
         let mut t = g.bltmpc - 100.0;
@@ -539,9 +610,9 @@ impl SkewT<'_> {
         let prof = self.prof;
         let pcl = prof.parcel(self.parcel);
 
-        // The vendored clip: x in [lpad, brx+rpad], y in [tpad, bry].
-        let clip = Rect::from_min_max(g.pt(g.lpad, g.tpad), g.pt(g.wid + g.rpad, g.bry));
-        let dp = painter.with_clip_rect(clip);
+        // The vendored clip: x in [lpad, brx+rpad], y in [tpad, bry] — the same
+        // region the hover readout accepts.
+        let dp = painter.with_clip_rect(g.hover_rect());
 
         self.draw_titles(painter, g, fonts);
 
@@ -1207,10 +1278,12 @@ impl SkewT<'_> {
     }
 }
 
-/// The pressure (hPa) under `pos` when it lies inside the plot area of a
-/// skew-T drawn into `rect` — shared by the widget's own readout and by
-/// [`crate::SoundingView`]'s linked hodograph cursor.
-pub(crate) fn hover_pressure(rect: Rect, pos: Pos2) -> Option<f64> {
+/// The pressure (hPa) under `pos` when it lies inside the framed area of a
+/// skew-T drawn into `rect` (the wind-barb column included — see
+/// [`SkewTGeometry::hover`]) — shared by the widget's own readout, by
+/// [`crate::SoundingView`]'s linked hodograph cursor, and by hosts mapping an
+/// image pixel back to a level.
+pub fn hover_pressure(rect: Rect, pos: Pos2) -> Option<f64> {
     let g = Geom::new(rect);
     let x = (pos.x - rect.min.x) as f64;
     let y = (pos.y - rect.min.y) as f64;
@@ -1223,6 +1296,20 @@ pub(crate) fn hover_pressure(rect: Rect, pos: Pos2) -> Option<f64> {
     } else {
         None
     }
+}
+
+/// The temperature (C) under `pos` — the x-inverse of the skew, i.e. which
+/// isotherm passes through that pixel. Accepts a narrower region than
+/// [`hover_pressure`]: the wind-barb column has a pressure but no isotherm
+/// under it, so only [`SkewTGeometry::plot`] yields a temperature.
+pub fn hover_tmpc(rect: Rect, pos: Pos2) -> Option<f64> {
+    let g = Geom::new(rect);
+    let x = (pos.x - rect.min.x) as f64;
+    let y = (pos.y - rect.min.y) as f64;
+    if x > g.brx || hover_pressure(rect, pos).is_none() {
+        return None;
+    }
+    Some(g.pix_to_tmpc(x, y))
 }
 
 impl SkewT<'_> {

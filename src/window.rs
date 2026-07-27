@@ -765,6 +765,123 @@ fn weighted_bottom_rects(
     ]
 }
 
+/// Height of the strip reserved above the right diagnostic grid for the brand
+/// text (see [`PanelRects::header_band`]).
+const HEADER_BAND_HEIGHT: f32 = 16.0;
+
+/// Where every cell of a [`SoundingView`] lands, in the same coordinates the
+/// widget paints into. A host that renders the window headless to an image
+/// needs this to tell a client which panel a pixel belongs to; the widget
+/// itself draws from the very same rects, so the two cannot drift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelRects {
+    /// The whole board, exactly as handed to [`panel_rects`].
+    pub board: Rect,
+    /// The skew-T cell (pass this to [`crate::skewt::geometry`]).
+    pub skew: Rect,
+    /// The two narrow strips right of the skew-T (speed, advection by default).
+    pub strips: [Rect; 2],
+    /// The large upper-right cell (the hodograph by default — pass it to
+    /// [`crate::panels::hodo::geometry`]).
+    pub main: Rect,
+    /// The four inset cells under [`PanelRects::main`].
+    pub insets: [Rect; 4],
+    /// The six bottom-band cells, in [`SoundingLayout::bottom`] order. A cell
+    /// whose panel is [`PanelKind::Hidden`] collapses to zero size.
+    pub bottom: [Rect; 6],
+    /// The strip above the right diagnostic grid that holds the brand text.
+    /// Reported because its width is the right grid's width, not anything a
+    /// host can derive from the window size.
+    pub header_band: Rect,
+}
+
+/// Lay out a sounding window of `board` under `layout` without drawing it.
+///
+/// `layout` is normalized first (exactly as [`Widget::ui`] does), so an
+/// unnormalized or hand-authored layout yields the rects that would actually
+/// be drawn. Everything is derived from `board`, which may be inset from the
+/// image a host is composing — no window-size constant is consulted.
+pub fn panel_rects(board: Rect, layout: &SoundingLayout) -> PanelRects {
+    board_rects(board, layout).panels
+}
+
+/// [`panel_rects`] plus the intermediate bands the in-app layout editor drags
+/// its handles along. Everything the window draws comes from here, so an
+/// editor border can never disagree with the panel it borders.
+struct BoardRects {
+    panels: PanelRects,
+    /// The right diagnostic grid, i.e. the upper-right cell below the header
+    /// band. Its three columns are the two strips plus `right_content`.
+    right_grid: Rect,
+    /// The wide third column of `right_grid`: the main cell plus the inset row.
+    right_content: Rect,
+    /// The inset row under the main cell.
+    inset_band: Rect,
+    /// The full-width bottom band.
+    bottom_band: Rect,
+}
+
+fn board_rects(board: Rect, layout: &SoundingLayout) -> BoardRects {
+    let mut layout = layout.clone();
+    layout.normalize_geometry();
+    let w = board.width();
+    let h = board.height();
+
+    // Shared track boundaries: every panel touching one of these reads the
+    // exact same coordinate, so resizing cannot produce drifting borders.
+    let band_top = board.min.y + h * layout.top_height_fraction;
+    let skew_right = board.min.x + w * layout.skew_width_fraction;
+
+    let skew = Rect::from_min_max(board.min, egui::pos2(skew_right, band_top));
+    let header_band = Rect::from_min_max(
+        egui::pos2(skew_right, board.min.y),
+        egui::pos2(board.max.x, board.min.y + HEADER_BAND_HEIGHT),
+    );
+    let right_grid = Rect::from_min_max(
+        egui::pos2(skew_right, header_band.max.y),
+        egui::pos2(board.max.x, band_top),
+    );
+    let right_columns = weighted_horizontal_rects(right_grid, &layout.right_column_fractions);
+    let right_content = right_columns[2];
+    let main_bottom =
+        right_content.min.y + right_content.height() * layout.right_main_height_fraction;
+    let main = Rect::from_min_max(
+        right_content.min,
+        egui::pos2(right_content.max.x, main_bottom),
+    );
+    let inset_band = Rect::from_min_max(
+        egui::pos2(right_content.min.x, main_bottom),
+        right_content.max,
+    );
+    let insets = weighted_horizontal_rects(inset_band, &layout.inset_column_fractions);
+
+    // Fully hidden columns surrender their allocation to visible columns, so
+    // the optional final cell never leaves an empty quarter of the row.
+    let bottom_band = Rect::from_min_max(egui::pos2(board.min.x, band_top), board.max);
+    let bottom = weighted_bottom_rects(
+        bottom_band,
+        &layout.bottom,
+        &layout.bottom_column_fractions,
+        layout.bottom_split_fraction,
+    );
+
+    BoardRects {
+        panels: PanelRects {
+            board,
+            skew,
+            strips: [right_columns[0], right_columns[1]],
+            main,
+            insets,
+            bottom,
+            header_band,
+        },
+        right_grid,
+        right_content,
+        inset_band,
+        bottom_band,
+    }
+}
+
 /// Move one shared boundary while leaving every non-adjacent track unchanged.
 /// `desired_fraction` is measured across the rendered allocation of `active`
 /// tracks (hidden bottom tracks are omitted from that list).
@@ -887,13 +1004,29 @@ impl Widget for SoundingView<'_> {
         let w = rect.width();
         let h = rect.height();
 
-        // Shared track boundaries: every panel touching one of these reads the
-        // exact same coordinate, so resizing cannot produce drifting borders.
-        let band_top = rect.min.y + h * layout.top_height_fraction;
-        let skew_right = rect.min.x + w * layout.skew_width_fraction;
+        // Every rect the window uses — panels, editor bands, drag handles —
+        // comes from the same public layout pass a headless host queries.
+        let BoardRects {
+            panels:
+                PanelRects {
+                    skew: skew_rect,
+                    strips: strip_rects,
+                    main: main_rect,
+                    insets: inset_rects,
+                    bottom: bottom_rects,
+                    header_band,
+                    ..
+                },
+            right_grid,
+            right_content,
+            inset_band,
+            bottom_band,
+        } = board_rects(rect, &layout);
+        let band_top = skew_rect.max.y;
+        let skew_right = skew_rect.max.x;
+        let main_bottom = main_rect.max.y;
 
         // --- Skew-T (its own Widget; place it in its cell). ---
-        let skew_rect = Rect::from_min_max(rect.min, egui::pos2(skew_right, band_top));
         let mut skew_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(skew_rect)
@@ -908,47 +1041,16 @@ impl Widget for SoundingView<'_> {
                 .size(skew_rect.size()),
         );
 
-        // --- Upper right: brand band + grid2. ---
-        let ur = Rect::from_min_max(
-            egui::pos2(skew_right, rect.min.y),
-            egui::pos2(rect.max.x, band_top),
-        );
-        let brand_h = 16.0f32;
+        // --- Brand text, in the header band above the right grid. ---
         if let Some(brand) = &self.brand {
             painter.text(
-                egui::pos2(ur.max.x - 4.0, ur.min.y + 2.0),
+                egui::pos2(header_band.max.x - 4.0, header_band.min.y + 2.0),
                 Align2::RIGHT_TOP,
                 brand,
                 self.style.regular_font(11.0),
                 self.style.fg_color,
             );
         }
-        let g2 = Rect::from_min_max(egui::pos2(ur.min.x, ur.min.y + brand_h), ur.max);
-        let right_columns = weighted_horizontal_rects(g2, &layout.right_column_fractions);
-        let strip_rects = [right_columns[0], right_columns[1]];
-        let right_content = right_columns[2];
-        let main_bottom =
-            right_content.min.y + right_content.height() * layout.right_main_height_fraction;
-        let main_rect = Rect::from_min_max(
-            right_content.min,
-            egui::pos2(right_content.max.x, main_bottom),
-        );
-        let inset_band = Rect::from_min_max(
-            egui::pos2(right_content.min.x, main_bottom),
-            right_content.max,
-        );
-        let inset_rects = weighted_horizontal_rects(inset_band, &layout.inset_column_fractions);
-
-        // --- Bottom band cells. ---
-        // Fully hidden columns surrender their allocation to visible columns,
-        // so the optional final cell never leaves an empty quarter of the row.
-        let band = Rect::from_min_max(egui::pos2(rect.min.x, band_top), rect.max);
-        let bottom_rects = weighted_bottom_rects(
-            band,
-            &layout.bottom,
-            &layout.bottom_column_fractions,
-            layout.bottom_split_fraction,
-        );
 
         // Scroll-to-zoom over the hodograph cell.
         if self.interactive
@@ -1155,16 +1257,16 @@ impl Widget for SoundingView<'_> {
                         ui,
                         &painter,
                         id.with(("right_column", boundary)),
-                        right_columns[boundary].max.x,
-                        g2.min.y,
-                        g2.max.y,
+                        strip_rects[boundary].max.x,
+                        right_grid.min.y,
+                        right_grid.max.y,
                         "Drag to resize the narrow strips and right panels",
                     ) {
                         set_active_track_boundary(
                             &mut layout.right_column_fractions,
                             &right_active,
                             boundary,
-                            (x - g2.min.x) / g2.width(),
+                            (x - right_grid.min.x) / right_grid.width(),
                         );
                         resized = true;
                     }
@@ -1217,15 +1319,15 @@ impl Widget for SoundingView<'_> {
                         &painter,
                         id.with(("bottom_column", adjacent[0], adjacent[1])),
                         left_rect.max.x,
-                        band.min.y,
-                        band.max.y,
+                        bottom_band.min.y,
+                        bottom_band.max.y,
                         "Drag to resize adjacent bottom panels",
                     ) {
                         set_active_track_boundary(
                             &mut layout.bottom_column_fractions,
                             &bottom_active,
                             boundary,
-                            (x - band.min.x) / band.width(),
+                            (x - bottom_band.min.x) / bottom_band.width(),
                         );
                         resized = true;
                     }
@@ -1242,7 +1344,7 @@ impl Widget for SoundingView<'_> {
                         "Drag to resize the two stacked bottom panels",
                     )
                 {
-                    layout.bottom_split_fraction = ((y - band.min.y) / band.height())
+                    layout.bottom_split_fraction = ((y - bottom_band.min.y) / bottom_band.height())
                         .clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION);
                     resized = true;
                 }
@@ -1479,6 +1581,146 @@ mod tests {
         assert_eq!(rects[5].width(), 0.0);
         assert!((rects[2].height() - 51.0).abs() < 0.1);
         assert!((rects[3].height() - 49.0).abs() < 0.1);
+    }
+
+    /// The real diagnostic board a host renders headless.
+    fn real_board(min: egui::Pos2) -> Rect {
+        Rect::from_min_size(min, Vec2::new(1288.0, 864.0))
+    }
+
+    fn every_rect(rects: &PanelRects) -> Vec<Rect> {
+        let mut all = vec![rects.board, rects.skew, rects.header_band, rects.main];
+        all.extend(rects.strips);
+        all.extend(rects.insets);
+        all.extend(rects.bottom);
+        all
+    }
+
+    #[test]
+    fn panel_rects_place_every_cell_where_the_layout_fractions_say() {
+        let layout = SoundingLayout::default();
+        let board = real_board(egui::pos2(0.0, 0.0));
+        let rects = panel_rects(board, &layout);
+        let close = |got: f32, want: f32, what: &str| {
+            assert!((got - want).abs() < 0.01, "{what}: {got} != {want}");
+        };
+
+        let band_top = 864.0 * layout.top_height_fraction;
+        let skew_right = 1288.0 * layout.skew_width_fraction;
+        assert_eq!(rects.board, board);
+        assert_eq!(rects.skew.min, board.min);
+        close(rects.skew.max.x, skew_right, "skew right");
+        close(rects.skew.max.y, band_top, "skew bottom");
+
+        // The header band spans the right grid only — the whole point of
+        // reporting it is that a host cannot derive that width itself.
+        close(rects.header_band.min.x, skew_right, "header left");
+        assert_eq!(rects.header_band.min.y, 0.0);
+        assert_eq!(rects.header_band.max, egui::pos2(1288.0, HEADER_BAND_HEIGHT));
+
+        // Right grid: two weighted strips, then the wide column.
+        let grid_width = 1288.0 - skew_right;
+        close(rects.strips[0].min.x, skew_right, "strip 0 left");
+        for (index, strip) in rects.strips.iter().enumerate() {
+            close(
+                strip.width(),
+                grid_width * layout.right_column_fractions[index],
+                "strip width",
+            );
+            close(strip.min.y, HEADER_BAND_HEIGHT, "strip top");
+            close(strip.max.y, band_top, "strip bottom");
+        }
+        close(rects.strips[1].min.x, rects.strips[0].max.x, "strip 1 left");
+
+        // Main cell and inset row split the wide column.
+        close(rects.main.min.x, rects.strips[1].max.x, "main left");
+        close(rects.main.max.x, 1288.0, "main right");
+        close(rects.main.min.y, HEADER_BAND_HEIGHT, "main top");
+        let content_height = band_top - HEADER_BAND_HEIGHT;
+        close(
+            rects.main.height(),
+            content_height * layout.right_main_height_fraction,
+            "main height",
+        );
+        let content_width = 1288.0 - rects.main.min.x;
+        for (index, inset) in rects.insets.iter().enumerate() {
+            close(
+                inset.width(),
+                content_width * layout.inset_column_fractions[index],
+                "inset width",
+            );
+            close(inset.min.y, rects.main.max.y, "inset top");
+            close(inset.max.y, band_top, "inset bottom");
+        }
+        close(rects.insets[0].min.x, rects.main.min.x, "inset 0 left");
+        close(rects.insets[3].max.x, 1288.0, "inset 3 right");
+
+        // Bottom band: the hidden sixth cell collapses and its column's share
+        // is redistributed, so the five visible cells span the full width.
+        let visible: f32 = layout.bottom_column_fractions[..4].iter().sum();
+        for (index, cell) in rects.bottom[..4].iter().enumerate() {
+            let column = if index < 2 { index } else { 2 };
+            close(
+                cell.width(),
+                1288.0 * layout.bottom_column_fractions[column] / visible,
+                "bottom width",
+            );
+        }
+        close(rects.bottom[0].min.x, 0.0, "bottom 0 left");
+        close(rects.bottom[4].max.x, 1288.0, "bottom 4 right");
+        close(rects.bottom[0].min.y, band_top, "bottom top");
+        close(rects.bottom[0].max.y, 864.0, "bottom bottom");
+        assert_eq!(rects.bottom[5].size(), Vec2::ZERO, "hidden cell collapses");
+        // The third column is the stacked pair.
+        close(rects.bottom[2].min.x, rects.bottom[3].min.x, "split left");
+        close(rects.bottom[2].max.y, rects.bottom[3].min.y, "split boundary");
+        close(
+            rects.bottom[2].height(),
+            (864.0 - band_top) * layout.bottom_split_fraction,
+            "split height",
+        );
+    }
+
+    #[test]
+    fn panel_rects_follow_a_board_inset_from_the_image() {
+        // A host's harness applies an outer margin, so the board it hands over
+        // is offset from the image origin; nothing may come from a window-size
+        // constant.
+        let layout = SoundingLayout::default();
+        let offset = Vec2::splat(8.0);
+        let flush = panel_rects(real_board(egui::pos2(0.0, 0.0)), &layout);
+        let inset = panel_rects(real_board(egui::pos2(8.0, 8.0)), &layout);
+
+        for (index, (flush, inset)) in every_rect(&flush)
+            .into_iter()
+            .zip(every_rect(&inset))
+            .enumerate()
+        {
+            let want = flush.translate(offset);
+            // f32 accumulation is not exactly translation-invariant; a
+            // hundredth of a point is far below the visible threshold.
+            assert!(
+                (inset.min - want.min).length() < 0.01 && (inset.max - want.max).length() < 0.01,
+                "rect {index}: {inset:?} is not {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn panel_rects_normalize_the_layout_the_widget_would_draw() {
+        // A host handing over hand-authored fractions gets the drawn answer,
+        // not a board sliced by out-of-range weights.
+        let mut raw = SoundingLayout::default();
+        raw.top_height_fraction = 0.95;
+        raw.right_column_fractions = [0.0, 0.0, 3.0];
+        let mut normalized = raw.clone();
+        normalized.normalize_geometry();
+        let board = real_board(egui::pos2(0.0, 0.0));
+
+        assert_eq!(panel_rects(board, &raw), panel_rects(board, &normalized));
+        assert!(
+            (panel_rects(board, &raw).skew.max.y - 864.0 * MAX_TOP_HEIGHT_FRACTION).abs() < 0.01
+        );
     }
 
     #[test]

@@ -18,6 +18,16 @@
 //! Call [`install_fonts`] once at startup to register the bundled
 //! Space Grotesk font (the face the original renderer uses); pass
 //! [`SkewTStyle::space_grotesk`] to the widget to select it.
+//!
+//! ## Mapping a pixel back to a value
+//!
+//! A host that renders the window headless to an image can recover what any
+//! pixel means without re-deriving the layout: [`panel_rects`] gives every
+//! cell of a [`SoundingView`], [`skewt::geometry`] the skew-T transform for
+//! the skew-T cell (with [`skewt::hover_pressure`] / [`skewt::hover_tmpc`] as
+//! the reference inverses), and [`panels::hodo::geometry`] the hodograph
+//! transform for whichever cell holds it. The widget draws from exactly these,
+//! so a reported readout cannot drift from the picture.
 
 pub mod barbs;
 pub mod derived;
@@ -29,12 +39,14 @@ pub mod skewt;
 pub mod utils;
 pub mod window;
 
+pub use panels::hodo::HodoGeometry;
 pub use profile::{LocationFootprint, ParcelType, Profile, SoundingData};
 pub use sharprs;
 pub use sharprs::params::cape::ParcelResult as Parcel;
-pub use skewt::{SkewT, SkewTStyle, SoundingFontPreset};
+pub use skewt::{SkewT, SkewTGeometry, SkewTStyle, SoundingFontPreset};
 pub use window::{
-    CornerPanel, PanelKind, SoundingLayout, SoundingView, store_layout, stored_layout,
+    CornerPanel, PanelKind, PanelRects, SoundingLayout, SoundingView, panel_rects, store_layout,
+    stored_layout,
 };
 pub use derived::DerivedParams;
 pub use diagnostic_table::{
