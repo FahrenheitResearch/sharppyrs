@@ -438,6 +438,127 @@ impl Fonts {
     }
 }
 
+#[cfg(test)]
+mod title_fitting_tests {
+    use super::*;
+
+    /// One unit per character, so these assertions are about where the cut lands
+    /// rather than about font metrics.
+    fn chars_wide(text: &str) -> f32 {
+        text.chars().count() as f32
+    }
+
+    const REAL_TITLE: &str =
+        "HRRR 07/27 21z F006  Valid Mon 8pm (03z) @6 mi SSW of Winslow West, AZ";
+
+    #[test]
+    fn a_title_that_fits_is_returned_whole() {
+        assert_eq!(elide_to_width(REAL_TITLE, 500.0, chars_wide), REAL_TITLE);
+    }
+
+    #[test]
+    fn a_cut_title_lands_on_a_word_boundary() {
+        let cut = elide_to_width(REAL_TITLE, 40.0, chars_wide);
+
+        assert!(chars_wide(&cut) <= 40.0, "{cut:?} is still too wide");
+        assert!(cut.ends_with('…'), "{cut:?} should be marked as cut");
+        let body = cut.trim_end_matches('…');
+        assert!(REAL_TITLE.starts_with(body), "{cut:?} is not a prefix");
+        let next = REAL_TITLE[body.len()..].chars().next().unwrap();
+        assert!(next.is_whitespace(), "cut landed inside a word: {cut:?}");
+    }
+
+    /// A place name with no spaces must not disappear entirely just because no
+    /// word boundary is available to back off to.
+    #[test]
+    fn one_over_long_word_takes_a_blunt_cut() {
+        let cut = elide_to_width("Averylongunbrokenplacename", 10.0, chars_wide);
+
+        assert!(!cut.is_empty());
+        assert!(chars_wide(&cut) <= 10.0, "{cut:?}");
+        assert!(cut.starts_with('A'));
+    }
+}
+
+/// Gap kept between the title and the panel's right edge (or the brand).
+const TITLE_RIGHT_PAD: f32 = 6.0;
+/// How small the title may get before characters are dropped instead.
+///
+/// Low enough that `text_scale` up to ~1.6 stops ENLARGING the title once it
+/// fills the band, rather than starting to cost characters: a caller asking for
+/// bigger type has not asked to lose the place name, which is the part of the
+/// title nothing else on the plate carries. Past that the floor binds and the
+/// title elides, which is the honest outcome of asking for type the band cannot
+/// hold.
+const TITLE_MIN_SCALE: f32 = 0.62;
+const TITLE_SHRINK_STEP: f32 = 0.04;
+
+/// Fit `text` into `max_width`, shrinking the type before losing characters.
+///
+/// The title is the one string in this panel whose length is out of the widget's
+/// hands -- a place name can be twice as long as another -- and the band clips,
+/// so an over-long title used to be cut mid-glyph, which reads as a rendering
+/// fault rather than as an omission. Shrinking is the right first move: the title
+/// is one line, read once, and a name that arrives 15% smaller still arrives.
+/// Only when the floor is still too wide does this cut, and then at a word
+/// boundary with an ellipsis so the cut reads as deliberate.
+fn fit_title(
+    painter: &Painter,
+    text: &str,
+    font: FontId,
+    max_width: f32,
+    color: Color32,
+) -> (FontId, String) {
+    let width_of = |t: &str, f: &FontId| {
+        painter.layout_no_wrap(t.to_string(), f.clone(), color).size().x
+    };
+    if text.is_empty() || max_width <= 0.0 || width_of(text, &font) <= max_width {
+        return (font, text.to_string());
+    }
+
+    let base = font.size;
+    let mut scale = 1.0 - TITLE_SHRINK_STEP;
+    while scale >= TITLE_MIN_SCALE {
+        let candidate = FontId { size: base * scale, ..font.clone() };
+        if width_of(text, &candidate) <= max_width {
+            return (candidate, text.to_string());
+        }
+        scale -= TITLE_SHRINK_STEP;
+    }
+
+    let floor = FontId { size: base * TITLE_MIN_SCALE, ..font.clone() };
+    let elided = elide_to_width(text, max_width, |t| width_of(t, &floor));
+    (floor, elided)
+}
+
+/// Longest prefix of `text` that fits in `max_width` once an ellipsis is added,
+/// backed off to the preceding word boundary when the cut would land mid-word.
+fn elide_to_width(text: &str, max_width: f32, width_of: impl Fn(&str) -> f32) -> String {
+    if width_of(text) <= max_width {
+        return text.to_string();
+    }
+    let mut best = String::new();
+    for (idx, _) in text.char_indices().skip(1) {
+        let candidate = format!("{}…", &text[..idx]);
+        if width_of(&candidate) > max_width {
+            break;
+        }
+        best = candidate;
+    }
+    if best.is_empty() {
+        return String::new();
+    }
+    let body = best.trim_end_matches('…');
+    // Only back off to a word boundary if that keeps most of what fit; a single
+    // over-long word should take a blunt cut rather than vanish.
+    if let Some(space) = body.rfind(char::is_whitespace)
+        && space * 2 > body.len()
+    {
+        return format!("{}…", body[..space].trim_end());
+    }
+    best
+}
+
 impl Widget for SkewT<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let size = self.size.unwrap_or_else(|| ui.available_size());
@@ -709,14 +830,37 @@ impl SkewT<'_> {
 
     fn draw_titles(&self, painter: &Painter, g: &Geom, fonts: &Fonts) {
         let st = &self.style;
+        // The brand shares this band, right-aligned, so reserve its width before
+        // the title is measured -- otherwise a long title fits by the numbers and
+        // then prints straight through the brand.
+        let brand_w = self
+            .brand
+            .as_ref()
+            .map(|brand| {
+                painter
+                    .layout_no_wrap(brand.clone(), fonts.label.clone(), st.fg_color)
+                    .size()
+                    .x
+                    + TITLE_RIGHT_PAD
+            })
+            .unwrap_or(0.0);
+        let available = (g.wid + g.rpad) as f32 - g.lpad as f32 - TITLE_RIGHT_PAD - brand_w;
+        let (title_font, title_text) = fit_title(
+            painter,
+            &self.title,
+            fonts.title.clone(),
+            available,
+            st.fg_color,
+        );
+
         // The title lives in the band above the plot border (TITLE_TOP = 3 in
         // the original renderer); anchor to the band's bottom so it never
         // collides with the border at small widget sizes.
         painter.text(
             g.pt(g.lpad, g.tpad - 2.0),
             Align2::LEFT_BOTTOM,
-            &self.title,
-            fonts.title.clone(),
+            title_text,
+            title_font,
             st.fg_color,
         );
         if let Some(brand) = &self.brand {
