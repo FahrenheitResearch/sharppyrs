@@ -57,7 +57,24 @@ struct Geom {
 }
 
 impl Geom {
-    fn with_zoom(rect: Rect, zoom_kts: f64) -> Geom {
+    /// The drawn area: the largest centered square that fits inside `cell`.
+    ///
+    /// `scale` is a single isotropic px-per-kt shared by both axes (see
+    /// `uv_to_pix`), so in a cell wider than it is tall the vertical axis
+    /// reaches fewer knots than the horizontal one -- at the rusty-weather
+    /// layout that is +/-89 kt against +/-125 kt, which reads as a bug even
+    /// though the geometry is correct. Squaring the drawn area gives both axes
+    /// the same range. Stretching to fill the cell instead would turn the
+    /// isotach rings into ellipses and misstate every shear vector's magnitude
+    /// and the critical angle, so the leftover width stays background
+    /// (`draw_zoomed` fills the whole cell before drawing).
+    fn plot_rect(cell: Rect) -> Rect {
+        let side = cell.width().min(cell.height());
+        Rect::from_center_size(cell.center(), Vec2::splat(side))
+    }
+
+    fn with_zoom(cell: Rect, zoom_kts: f64) -> Geom {
+        let rect = Geom::plot_rect(cell);
         let wid = rect.width() as f64;
         let hgt = rect.height() as f64;
         let hodomag = zoom_kts.clamp(80.0, 500.0);
@@ -127,6 +144,50 @@ mod typography_tests {
     }
 }
 
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn the_square_plot_area_is_centered_in_a_wide_cell() {
+        let cell = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(400.0, 200.0));
+        let plot = Geom::plot_rect(cell);
+
+        assert_eq!(plot.width(), 200.0);
+        assert_eq!(plot.height(), 200.0);
+        assert!((plot.center().x - cell.center().x).abs() < 1.0e-4);
+        assert!((plot.center().y - cell.center().y).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn both_axes_reach_the_same_knots_and_label_ninety() {
+        // The rusty-weather diagnostic board hands the hodograph a cell of
+        // roughly 576x409 pt. Before squaring, the shared isotropic scale left
+        // the vertical axis at +/-89 kt against the horizontal's +/-125, so the
+        // 90 ring's labels fell a couple of pixels outside the clip rect and
+        // the axis appeared to stop at 80.
+        let cell = Rect::from_min_size(Pos2::new(1350.7, 45.0), Vec2::new(575.6, 409.4));
+        let g = Geom::with_zoom(cell, 195.0);
+
+        assert!((g.wid - g.hgt).abs() < 1.0e-4, "plot area must be square");
+
+        let horizontal_kt = g.centerx / g.scale;
+        let vertical_kt = g.centery / g.scale;
+        assert!(
+            (horizontal_kt - vertical_kt).abs() < 1.0e-4,
+            "axes must span equal knots: {horizontal_kt} vs {vertical_kt}"
+        );
+
+        // 90 is the outermost LABELED ring in all four directions: its labels fit
+        // whole, 100's do not. Rings past 90 still draw, unlabeled, out to the
+        // corners -- what the cap removes is the half-clipped number on the frame.
+        let fonts = Fonts::new(g.hgt, &SkewTStyle::default());
+        let reach = g.centerx.min(g.centery) - label_slack(&fonts);
+        assert!(90.0 * g.scale <= reach, "90 must be labeled");
+        assert!(100.0 * g.scale > reach, "100 must not be labeled");
+    }
+}
+
 /// Draw this panel into `rect`.
 pub fn draw(painter: &Painter, rect: Rect, prof: &Profile, dv: &DerivedParams, style: &SkewTStyle) {
     draw_zoomed(painter, rect, prof, dv, style, DEFAULT_ZOOM_KTS)
@@ -145,10 +206,17 @@ pub(crate) fn draw_zoomed(
         return;
     }
     let p = painter.with_clip_rect(rect);
+    // Background covers the whole cell, so the letterbox gutters either side of
+    // the square plot area read as panel background rather than as a hole.
+    p.rect_filled(rect, 0.0, style.bg_color);
+
     let g = Geom::with_zoom(rect, zoom_kts);
+    // Clip to the square: the isotach rings run out to the corner distance, so
+    // without this the arcs beyond the square's edges spill into the gutters
+    // and the frame stops reading as a frame.
+    let p = p.with_clip_rect(g.rect);
     let fonts = Fonts::new(g.hgt, style);
 
-    p.rect_filled(rect, 0.0, style.bg_color);
     draw_background(&p, &g, &fonts, style);
     draw_data(&p, &g, &fonts, prof, dv, style);
     // The locator map now lives in its own panel (see panels::locator);
@@ -160,11 +228,20 @@ pub(crate) fn draw_zoomed(
 // Background pass (port of backgroundHodo.plotBackground)
 // ----------------------------------------------------------------------
 fn draw_background(p: &Painter, g: &Geom, fonts: &Fonts, style: &SkewTStyle) {
-    // Speed rings out to the bottom-right corner, every 10 kt.
+    // Speed rings out to the corner, every 10 kt -- but only LABEL the rings
+    // whose labels fit whole. The four labels sit on the axes at +/- the ring
+    // radius (see `draw_ring`), so a ring that itself fits can still put its
+    // label across the frame edge, and the clip rect then draws a sliver of a
+    // half number riding the border. There is no zoom that avoids that by luck:
+    // the +2.5 nudge is asymmetric and the horizontal labels are wider than the
+    // vertical ones are tall, so the "fits" windows for the two directions do
+    // not overlap. Capping the labels fixes it for any cell shape and any zoom.
     let max_uv = (g.centerx.hypot(g.centery) / g.scale) as i64;
+    let label_reach = g.centerx.min(g.centery) - label_slack(fonts);
     let mut spd = 10i64;
     while spd <= max_uv + 10 {
-        draw_ring(p, g, fonts, style, spd as f64);
+        let r = spd as f64 * g.scale;
+        draw_ring(p, g, fonts, style, spd as f64, r <= label_reach);
         spd += 10;
     }
     // Axes + frame (fg white, 2 px).
@@ -177,9 +254,18 @@ fn draw_background(p: &Painter, g: &Geom, fonts: &Fonts, style: &SkewTStyle) {
     p.line_segment([g.pt(0.0, g.hgt), g.pt(0.0, 0.0)], stroke);
 }
 
-/// Port of `backgroundHodo.draw_ring`: dashed isotach circle + the four
-/// speed labels sitting on the axes.
-fn draw_ring(p: &Painter, g: &Geom, fonts: &Fonts, style: &SkewTStyle, spd: f64) {
+/// How far short of the frame a ring's radius must stop for its labels to fit
+/// whole: the original's +2.5 px nudge plus half a label. The widest label is
+/// three digits, and a horizontal label clips on width where a vertical one
+/// clips on height, so half-WIDTH is the binding case and covers both.
+fn label_slack(fonts: &Fonts) -> f64 {
+    const NUDGE: f64 = 2.5;
+    NUDGE + f64::from(fonts.label.size) * 0.9
+}
+
+/// Port of `backgroundHodo.draw_ring`: dashed isotach circle, plus the four
+/// speed labels sitting on the axes when `label` (see `draw_background`).
+fn draw_ring(p: &Painter, g: &Geom, fonts: &Fonts, style: &SkewTStyle, spd: f64, label: bool) {
     let r = spd * g.scale;
     // Qt drawEllipse with a DashLine pen (dash 4, gap 2 at width 1).
     let n = (r as usize).clamp(64, 512);
@@ -189,6 +275,10 @@ fn draw_ring(p: &Painter, g: &Geom, fonts: &Fonts, style: &SkewTStyle, spd: f64)
         pts.push(g.pt(g.centerx + r * a.cos(), g.centery + r * a.sin()));
     }
     p.extend(Shape::dashed_line(&pts, Stroke::new(1.0, ISOTACH_COLOR), 4.0, 2.0));
+
+    if !label {
+        return;
+    }
 
     // Labels: AlignCenter in 15x15 rects offset 5 px from the axes
     // (centers at +/- ring radius, nudged +12.5 / +2.5 like the original).
