@@ -46,11 +46,14 @@ pub enum PanelKind {
     Ship,
     Streamwiseness,
     Stp,
+    /// Wrapped prose the host supplies via [`SoundingView::notes`] — why this
+    /// sounding is worth posting, in the forecaster's own words.
+    Notes,
     Hidden,
 }
 
 impl PanelKind {
-    pub const ALL: [PanelKind; 16] = [
+    pub const ALL: [PanelKind; 17] = [
         PanelKind::Speed,
         PanelKind::Advection,
         PanelKind::Hodograph,
@@ -66,6 +69,7 @@ impl PanelKind {
         PanelKind::Ship,
         PanelKind::Streamwiseness,
         PanelKind::Stp,
+        PanelKind::Notes,
         PanelKind::Hidden,
     ];
 
@@ -86,6 +90,7 @@ impl PanelKind {
             PanelKind::Ship => "SHIP box",
             PanelKind::Streamwiseness => "Streamwiseness",
             PanelKind::Stp => "Effective STP",
+            PanelKind::Notes => "Notes",
             PanelKind::Hidden => "(hidden)",
         }
     }
@@ -110,6 +115,7 @@ impl PanelKind {
             PanelKind::Ship => "ship",
             PanelKind::Streamwiseness => "streamwiseness",
             PanelKind::Stp => "stp",
+            PanelKind::Notes => "notes",
             PanelKind::Hidden => "hidden",
         }
     }
@@ -126,8 +132,9 @@ impl PanelKind {
         prof: &Profile,
         dv: &DerivedParams,
         st: &SkewTStyle,
-        hodo_zoom: f64,
+        inputs: PanelInputs<'_>,
     ) {
+        let PanelInputs { hodo_zoom, notes } = inputs;
         match self {
             PanelKind::Speed => panels::speed::draw(painter, rect, prof, dv, st),
             PanelKind::Advection => panels::advection::draw(painter, rect, prof, dv, st),
@@ -152,9 +159,19 @@ impl PanelKind {
             PanelKind::Ship => panels::ship_inset::draw(painter, rect, prof, dv, st),
             PanelKind::Streamwiseness => panels::streamwiseness::draw(painter, rect, prof, dv, st),
             PanelKind::Stp => panels::stp::draw(painter, rect, prof, dv, st),
+            PanelKind::Notes => panels::notes::draw(painter, rect, st, notes),
             PanelKind::Hidden => {}
         }
     }
+}
+
+/// What a panel needs beyond the profile and the style: the hodograph's current
+/// zoom and the host's note. A struct so the draw dispatch does not grow one
+/// positional argument per panel with an appetite of its own.
+#[derive(Clone, Copy)]
+struct PanelInputs<'a> {
+    hodo_zoom: f64,
+    notes: &'a str,
 }
 
 /// User-adjustable window layout: which panel lives in each cell of the SPC
@@ -166,6 +183,11 @@ pub struct SoundingLayout {
     pub strips: [PanelKind; 2],
     /// The large upper-right cell.
     pub main: PanelKind,
+    /// Optional second panel sharing the large upper-right cell side by side
+    /// with [`SoundingLayout::main`], which keeps the left
+    /// [`SoundingLayout::main_split_fraction`] of it.
+    /// [`PanelKind::Hidden`] — the default — leaves the whole cell to `main`.
+    pub main_side: PanelKind,
     /// The four inset cells under it.
     pub insets: [PanelKind; 4],
     /// The six bottom-band cells. Slots 0 and 1 occupy full-height columns;
@@ -196,6 +218,10 @@ pub struct SoundingLayout {
     pub bottom_column_fractions: [f32; 5],
     /// Height fraction of the upper cell in the split third bottom column.
     pub bottom_split_fraction: f32,
+    /// Width fraction [`SoundingLayout::main`] keeps of the large upper-right
+    /// cell; the remainder goes to [`SoundingLayout::main_side`]. Ignored while
+    /// that panel is hidden.
+    pub main_split_fraction: f32,
 }
 
 const DEFAULT_TOP_HEIGHT_FRACTION: f32 = 0.67;
@@ -208,6 +234,11 @@ const DEFAULT_INSET_COLUMN_FRACTIONS: [f32; 4] = [0.25; 4];
 // and the optional final cell keep their previous 0.14 / 0.25 shares.
 const DEFAULT_BOTTOM_COLUMN_FRACTIONS: [f32; 5] = [0.2318, 0.20618, 0.17202, 0.14, 0.25];
 const DEFAULT_BOTTOM_SPLIT_FRACTION: f32 = 0.51;
+// The stock main cell measures 575.6 x 409.4 pt, so leaving the first panel
+// 0.711 of its width makes that sub-cell square — which is exactly what the
+// hodograph's centered-square plot wants, so splitting there costs it no drawn
+// area and reclaims the ~166 pt the letterbox used to waste.
+const DEFAULT_MAIN_SPLIT_FRACTION: f32 = 0.711;
 const LEGACY_DEFAULT_BOTTOM_COLUMN_FRACTIONS: [f32; 3] = [0.61, 0.14, 0.25];
 
 const MIN_TOP_HEIGHT_FRACTION: f32 = 0.40;
@@ -218,9 +249,15 @@ const MIN_RIGHT_MAIN_HEIGHT_FRACTION: f32 = 0.35;
 const MAX_RIGHT_MAIN_HEIGHT_FRACTION: f32 = 0.85;
 const MIN_BOTTOM_SPLIT_FRACTION: f32 = 0.20;
 const MAX_BOTTOM_SPLIT_FRACTION: f32 = 0.80;
+// The main cell's split is the bottom band's split rotated, so it takes the
+// same range: wide enough for the 0.711 that squares the hodograph, and tight
+// enough that neither sub-panel can shrink to an unreadable sliver.
+const MIN_MAIN_SPLIT_FRACTION: f32 = MIN_BOTTOM_SPLIT_FRACTION;
+const MAX_MAIN_SPLIT_FRACTION: f32 = MAX_BOTTOM_SPLIT_FRACTION;
 const MIN_TRACK_FRACTION: f32 = 0.05;
 const GEOMETRY_TOKEN_PREFIX: &str = "g1:";
 const SPLIT_BOARD_GEOMETRY_TOKEN_PREFIX: &str = "g2:";
+const SPLIT_MAIN_GEOMETRY_TOKEN_PREFIX: &str = "g3:";
 
 fn migrate_legacy_bottom(
     panels: [PanelKind; 3],
@@ -273,6 +310,7 @@ impl Default for SoundingLayout {
         SoundingLayout {
             strips: [PanelKind::Speed, PanelKind::Advection],
             main: PanelKind::Hodograph,
+            main_side: PanelKind::Hidden,
             insets: [
                 PanelKind::Slinky,
                 PanelKind::ThetaE,
@@ -295,6 +333,7 @@ impl Default for SoundingLayout {
             inset_column_fractions: DEFAULT_INSET_COLUMN_FRACTIONS,
             bottom_column_fractions: DEFAULT_BOTTOM_COLUMN_FRACTIONS,
             bottom_split_fraction: DEFAULT_BOTTOM_SPLIT_FRACTION,
+            main_split_fraction: DEFAULT_MAIN_SPLIT_FRACTION,
         }
     }
 }
@@ -346,18 +385,22 @@ impl SoundingLayout {
     /// sections, panel tokens comma-separated within a section:
     ///
     /// ```text
-    /// strips(2) | main(1) | insets(4) | bottom(6) | hodo_zoom_kts
+    /// strips(2) | main(1 or 2) | insets(4) | bottom(6) | hodo_zoom_kts
     /// ```
     ///
     /// e.g. the default layout is
     /// `"speed,advection|hodograph|slinky,thetae,srwinds,locationmap|convectiveindices,kinematics,ship,severeindices,streamwiseness,hidden|250"`.
     /// Panel tokens come from [`PanelKind::token`]; the zoom is a plain
-    /// decimal in knots. A non-default geometry appends a sixth, versioned
-    /// section: `g2:` followed by the three major split fractions, the three
-    /// right-column fractions, four inset fractions, five bottom-band column
-    /// fractions, and the split-column height fraction (groups are separated
-    /// by `;`). [`SoundingLayout::from_tokens`] also migrates the historical
-    /// three-cell bottom section and `g1:` geometry.
+    /// decimal in knots. A second panel in the main section splits that cell
+    /// side by side (`hodograph,locationmap` puts the map right of the
+    /// hodograph); a one-panel main section leaves the whole cell to `main`.
+    /// A non-default geometry appends a sixth, versioned section: `g3:`
+    /// followed by the three major split fractions, the three right-column
+    /// fractions, four inset fractions, five bottom-band column fractions, the
+    /// split-column height fraction, and the main cell's split width fraction
+    /// (groups are separated by `;`). [`SoundingLayout::from_tokens`] also
+    /// migrates the historical three-cell bottom section and `g1:` / `g2:`
+    /// geometry.
     pub fn to_tokens(&self) -> String {
         let csv = |kinds: &[PanelKind]| {
             kinds
@@ -375,17 +418,24 @@ impl SoundingLayout {
         };
         let mut layout = self.clone();
         layout.normalize_geometry();
+        // An unsplit main cell writes one panel, so every string a host already
+        // holds comes back out byte for byte.
+        let main = if layout.main_side == PanelKind::Hidden {
+            layout.main.token().to_owned()
+        } else {
+            csv(&[layout.main, layout.main_side])
+        };
         let mut tokens = format!(
             "{}|{}|{}|{}|{}",
             csv(&layout.strips),
-            layout.main.token(),
+            main,
             csv(&layout.insets),
             csv(&layout.bottom),
             layout.hodo_zoom_kts,
         );
         if !layout.has_default_geometry() {
             tokens.push('|');
-            tokens.push_str(SPLIT_BOARD_GEOMETRY_TOKEN_PREFIX);
+            tokens.push_str(SPLIT_MAIN_GEOMETRY_TOKEN_PREFIX);
             tokens.push_str(&float_csv(&[
                 layout.top_height_fraction,
                 layout.skew_width_fraction,
@@ -399,6 +449,8 @@ impl SoundingLayout {
             tokens.push_str(&float_csv(&layout.bottom_column_fractions));
             tokens.push(';');
             tokens.push_str(&layout.bottom_split_fraction.to_string());
+            tokens.push(';');
+            tokens.push_str(&layout.main_split_fraction.to_string());
         }
         tokens
     }
@@ -410,6 +462,8 @@ impl SoundingLayout {
     /// three-cell bottom sections are migrated: a leading historical combined
     /// index board expands into the new convective, kinematic, SHIP, and
     /// severe-index panels while the other two old cells keep their roles.
+    /// A one-panel main section — every string written before that cell could
+    /// be split — leaves [`SoundingLayout::main_side`] hidden.
     pub fn from_tokens(s: &str) -> Option<SoundingLayout> {
         fn cells<const N: usize>(section: &str) -> Option<[PanelKind; N]> {
             let mut out = [PanelKind::Hidden; N];
@@ -433,7 +487,13 @@ impl SoundingLayout {
         }
         let mut sections = s.split('|');
         let strips = cells::<2>(sections.next()?)?;
-        let [main] = cells::<1>(sections.next()?)?;
+        let main_section = sections.next()?;
+        let (main, main_side) = if let Some([main, side]) = cells::<2>(main_section) {
+            (main, side)
+        } else {
+            let [main] = cells::<1>(main_section)?;
+            (main, PanelKind::Hidden)
+        };
         let insets = cells::<4>(sections.next()?)?;
         let bottom_section = sections.next()?;
         let (bottom, legacy_bottom) = if let Some(bottom) = cells::<6>(bottom_section) {
@@ -451,6 +511,7 @@ impl SoundingLayout {
         let mut layout = SoundingLayout {
             strips,
             main,
+            main_side,
             insets,
             bottom,
             hodo_zoom_kts: zoom.clamp(80.0, 500.0),
@@ -467,6 +528,8 @@ impl SoundingLayout {
                 (1, body)
             } else if let Some(body) = geometry.strip_prefix(SPLIT_BOARD_GEOMETRY_TOKEN_PREFIX) {
                 (2, body)
+            } else if let Some(body) = geometry.strip_prefix(SPLIT_MAIN_GEOMETRY_TOKEN_PREFIX) {
+                (3, body)
             } else {
                 return None;
             };
@@ -497,6 +560,10 @@ impl SoundingLayout {
                 layout.bottom_column_fractions = floats::<5>(groups.next()?)?;
                 let [split] = floats::<1>(groups.next()?)?;
                 layout.bottom_split_fraction = split;
+            }
+            if version >= 3 {
+                let [split] = floats::<1>(groups.next()?)?;
+                layout.main_split_fraction = split;
             }
             if groups.next().is_some() {
                 return None;
@@ -534,6 +601,12 @@ impl SoundingLayout {
             DEFAULT_BOTTOM_SPLIT_FRACTION
         }
         .clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION);
+        self.main_split_fraction = if self.main_split_fraction.is_finite() {
+            self.main_split_fraction
+        } else {
+            DEFAULT_MAIN_SPLIT_FRACTION
+        }
+        .clamp(MIN_MAIN_SPLIT_FRACTION, MAX_MAIN_SPLIT_FRACTION);
         normalize_track_fractions(&mut self.right_column_fractions);
         normalize_track_fractions(&mut self.inset_column_fractions);
         normalize_track_fractions(&mut self.bottom_column_fractions);
@@ -547,6 +620,7 @@ impl SoundingLayout {
             && self.inset_column_fractions == DEFAULT_INSET_COLUMN_FRACTIONS
             && self.bottom_column_fractions == DEFAULT_BOTTOM_COLUMN_FRACTIONS
             && self.bottom_split_fraction == DEFAULT_BOTTOM_SPLIT_FRACTION
+            && self.main_split_fraction == DEFAULT_MAIN_SPLIT_FRACTION
     }
 }
 
@@ -577,6 +651,7 @@ pub struct SoundingView<'a> {
     derived: &'a DerivedParams,
     title: String,
     brand: Option<String>,
+    notes: String,
     parcel: ParcelType,
     style: SkewTStyle,
     size: Option<Vec2>,
@@ -594,6 +669,7 @@ impl<'a> SoundingView<'a> {
             derived,
             title: String::new(),
             brand: None,
+            notes: String::new(),
             parcel: ParcelType::MostUnstable,
             style: SkewTStyle::default(),
             size: None,
@@ -659,6 +735,15 @@ impl<'a> SoundingView<'a> {
         self
     }
 
+    /// Prose for the [`PanelKind::Notes`] cell — why this sounding is worth
+    /// posting, at more than the one elided line the header band holds. Drawn
+    /// only where a layout places that panel; empty (the default) leaves the
+    /// cell blank.
+    pub fn notes(mut self, notes: impl Into<String>) -> Self {
+        self.notes = notes.into();
+        self
+    }
+
     pub fn parcel(mut self, parcel: ParcelType) -> Self {
         self.parcel = parcel;
         self
@@ -688,6 +773,48 @@ fn weighted_horizontal_rects<const N: usize>(band: Rect, fractions: &[f32; N]) -
         };
         Rect::from_min_max(min, egui::pos2(x, band.max.y))
     })
+}
+
+/// Which way a cell shared by two panels is cut.
+#[derive(Clone, Copy)]
+enum SplitAxis {
+    /// First panel left, second right.
+    SideBySide,
+    /// First panel on top, second below.
+    Stacked,
+}
+
+/// Divide `cell` between two panels, the first keeping `fraction` of it along
+/// `axis`. A hidden panel collapses to an empty rect and surrenders the whole
+/// cell to its neighbour, the same rule a fully hidden bottom column follows.
+/// `fraction` is used as given, so callers hand over a clamped one.
+fn split_cell(cell: Rect, panels: [PanelKind; 2], fraction: f32, axis: SplitAxis) -> [Rect; 2] {
+    let (first, second) = match axis {
+        SplitAxis::SideBySide => {
+            let x = cell.min.x + cell.width() * fraction;
+            (
+                Rect::from_min_max(cell.min, egui::pos2(x, cell.max.y)),
+                Rect::from_min_max(egui::pos2(x, cell.min.y), cell.max),
+            )
+        }
+        SplitAxis::Stacked => {
+            let y = cell.min.y + cell.height() * fraction;
+            (
+                Rect::from_min_max(cell.min, egui::pos2(cell.max.x, y)),
+                Rect::from_min_max(egui::pos2(cell.min.x, y), cell.max),
+            )
+        }
+    };
+    let collapsed = |at: egui::Pos2| Rect::from_min_max(at, at);
+    match (
+        panels[0] != PanelKind::Hidden,
+        panels[1] != PanelKind::Hidden,
+    ) {
+        (true, true) => [first, second],
+        (true, false) => [cell, collapsed(cell.max)],
+        (false, true) => [collapsed(cell.min), cell],
+        (false, false) => [collapsed(cell.min), collapsed(cell.min)],
+    }
 }
 
 fn bottom_active_columns(panels: &[PanelKind; 6]) -> [bool; 5] {
@@ -726,19 +853,12 @@ fn weighted_bottom_rects(
     });
 
     let collapsed = |at: egui::Pos2| Rect::from_min_max(at, at);
-    let split = split_fraction.clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION);
-    let middle_y = columns[2].min.y + columns[2].height() * split;
-    let middle_top = Rect::from_min_max(columns[2].min, egui::pos2(columns[2].max.x, middle_y));
-    let middle_bottom = Rect::from_min_max(egui::pos2(columns[2].min.x, middle_y), columns[2].max);
-    let (slot2, slot3) = match (
-        panels[2] != PanelKind::Hidden,
-        panels[3] != PanelKind::Hidden,
-    ) {
-        (true, true) => (middle_top, middle_bottom),
-        (true, false) => (columns[2], collapsed(columns[2].max)),
-        (false, true) => (collapsed(columns[2].min), columns[2]),
-        (false, false) => (collapsed(columns[2].min), collapsed(columns[2].min)),
-    };
+    let [slot2, slot3] = split_cell(
+        columns[2],
+        [panels[2], panels[3]],
+        split_fraction.clamp(MIN_BOTTOM_SPLIT_FRACTION, MAX_BOTTOM_SPLIT_FRACTION),
+        SplitAxis::Stacked,
+    );
     [
         if active[0] {
             columns[0]
@@ -781,9 +901,14 @@ pub struct PanelRects {
     pub skew: Rect,
     /// The two narrow strips right of the skew-T (speed, advection by default).
     pub strips: [Rect; 2],
-    /// The large upper-right cell (the hodograph by default — pass it to
-    /// [`crate::panels::hodo::geometry`]).
+    /// Where [`SoundingLayout::main`] draws (the hodograph by default — pass it
+    /// to [`crate::panels::hodo::geometry`]). This is the whole large
+    /// upper-right cell unless [`SoundingLayout::main_side`] splits it, in which
+    /// case it is the left share.
     pub main: Rect,
+    /// Where [`SoundingLayout::main_side`] draws: the right share of the large
+    /// upper-right cell, collapsed to zero size while that panel is hidden.
+    pub main_side: Rect,
     /// The four inset cells under [`PanelRects::main`].
     pub insets: [Rect; 4],
     /// The six bottom-band cells, in [`SoundingLayout::bottom`] order. A cell
@@ -815,6 +940,8 @@ struct BoardRects {
     right_grid: Rect,
     /// The wide third column of `right_grid`: the main cell plus the inset row.
     right_content: Rect,
+    /// The whole main cell, i.e. before `main_side` splits it.
+    main_cell: Rect,
     /// The inset row under the main cell.
     inset_band: Rect,
     /// The full-width bottom band.
@@ -845,10 +972,23 @@ fn board_rects(board: Rect, layout: &SoundingLayout) -> BoardRects {
     let right_content = right_columns[2];
     let main_bottom =
         right_content.min.y + right_content.height() * layout.right_main_height_fraction;
-    let main = Rect::from_min_max(
+    let main_cell = Rect::from_min_max(
         right_content.min,
         egui::pos2(right_content.max.x, main_bottom),
     );
+    // No side panel means no split at all, so the whole cell stays the main
+    // panel's — including when the main panel itself is hidden, which is how
+    // every layout string written before the cell could be shared laid out.
+    let [main, main_side] = if layout.main_side == PanelKind::Hidden {
+        [main_cell, Rect::from_min_size(main_cell.max, Vec2::ZERO)]
+    } else {
+        split_cell(
+            main_cell,
+            [layout.main, layout.main_side],
+            layout.main_split_fraction,
+            SplitAxis::SideBySide,
+        )
+    };
     let inset_band = Rect::from_min_max(
         egui::pos2(right_content.min.x, main_bottom),
         right_content.max,
@@ -871,15 +1011,30 @@ fn board_rects(board: Rect, layout: &SoundingLayout) -> BoardRects {
             skew,
             strips: [right_columns[0], right_columns[1]],
             main,
+            main_side,
             insets,
             bottom,
             header_band,
         },
         right_grid,
         right_content,
+        main_cell,
         inset_band,
         bottom_band,
     }
+}
+
+/// Which cell the hodograph landed in, if any. Both the scroll-to-zoom hit test
+/// and the linked skew-T cursor need this, and neither may assume the main cell:
+/// any cell can hold the hodograph, and the main cell may be shared.
+fn hodograph_rect(layout: &SoundingLayout, rects: &PanelRects) -> Option<Rect> {
+    std::iter::once((&layout.main, &rects.main))
+        .chain(std::iter::once((&layout.main_side, &rects.main_side)))
+        .chain(layout.insets.iter().zip(rects.insets.iter()))
+        .chain(layout.strips.iter().zip(rects.strips.iter()))
+        .chain(layout.bottom.iter().zip(rects.bottom.iter()))
+        .find(|(kind, _)| **kind == PanelKind::Hodograph)
+        .map(|(_, rect)| *rect)
 }
 
 /// Move one shared boundary while leaving every non-adjacent track unchanged.
@@ -1007,24 +1162,28 @@ impl Widget for SoundingView<'_> {
         // Every rect the window uses — panels, editor bands, drag handles —
         // comes from the same public layout pass a headless host queries.
         let BoardRects {
-            panels:
-                PanelRects {
-                    skew: skew_rect,
-                    strips: strip_rects,
-                    main: main_rect,
-                    insets: inset_rects,
-                    bottom: bottom_rects,
-                    header_band,
-                    ..
-                },
+            panels,
             right_grid,
             right_content,
+            main_cell,
             inset_band,
             bottom_band,
         } = board_rects(rect, &layout);
+        let PanelRects {
+            skew: skew_rect,
+            strips: strip_rects,
+            main: main_rect,
+            main_side: main_side_rect,
+            insets: inset_rects,
+            bottom: bottom_rects,
+            header_band,
+            ..
+        } = panels;
         let band_top = skew_rect.max.y;
         let skew_right = skew_rect.max.x;
-        let main_bottom = main_rect.max.y;
+        // The whole cell's lower edge, which a split (or a hidden main panel)
+        // leaves where it was — unlike `main_rect`'s.
+        let main_bottom = main_cell.max.y;
 
         // --- Skew-T (its own Widget; place it in its cell). ---
         let mut skew_ui = ui.new_child(
@@ -1052,11 +1211,13 @@ impl Widget for SoundingView<'_> {
             );
         }
 
-        // Scroll-to-zoom over the hodograph cell.
+        let hodo_cell = hodograph_rect(&layout, &panels);
+
+        // Scroll-to-zoom over the hodograph, in whichever cell it landed.
         if self.interactive
             && let Some(pos) = response.hover_pos()
-            && main_rect.contains(pos)
-            && layout.main == PanelKind::Hodograph
+            && let Some(hodo_rect) = hodo_cell
+            && hodo_rect.contains(pos)
         {
             let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
@@ -1068,6 +1229,10 @@ impl Widget for SoundingView<'_> {
         let dv = self.derived;
         let st = &self.style;
         let zoom = layout.hodo_zoom_kts;
+        let inputs = PanelInputs {
+            hodo_zoom: zoom,
+            notes: &self.notes,
+        };
         for (kind, r) in layout
             .strips
             .iter()
@@ -1075,6 +1240,7 @@ impl Widget for SoundingView<'_> {
             .chain(layout.insets.iter().zip(inset_rects.iter()))
             .chain(layout.bottom.iter().zip(bottom_rects.iter()))
             .chain(std::iter::once((&layout.main, &main_rect)))
+            .chain(std::iter::once((&layout.main_side, &main_side_rect)))
         {
             let configured_kind = match kind {
                 PanelKind::ConvectiveIndices => Some(DiagnosticTablePanelKind::Convective),
@@ -1115,21 +1281,15 @@ impl Widget for SoundingView<'_> {
                             &painter, *r, self.prof, dv, st, patches,
                         );
                     }
-                    _ => kind.draw(&painter, *r, self.prof, dv, st, zoom),
+                    _ => kind.draw(&painter, *r, self.prof, dv, st, inputs),
                 }
             } else {
-                kind.draw(&painter, *r, self.prof, dv, st, zoom);
+                kind.draw(&painter, *r, self.prof, dv, st, inputs);
             }
         }
 
         // Linked cursor: hovering the skew-T highlights the wind at that
         // height on the hodograph (wherever it currently lives).
-        let hodo_cell = std::iter::once((&layout.main, &main_rect))
-            .chain(layout.insets.iter().zip(inset_rects.iter()))
-            .chain(layout.strips.iter().zip(strip_rects.iter()))
-            .chain(layout.bottom.iter().zip(bottom_rects.iter()))
-            .find(|(k, _)| **k == PanelKind::Hodograph)
-            .map(|(_, r)| *r);
         if self.interactive
             && let Some(pos) = response.hover_pos()
             && skew_rect.contains(pos)
@@ -1163,6 +1323,7 @@ impl Widget for SoundingView<'_> {
                     let SoundingLayout {
                         strips,
                         main,
+                        main_side,
                         insets,
                         bottom,
                         ..
@@ -1171,6 +1332,7 @@ impl Widget for SoundingView<'_> {
                         slots.push((k, *r));
                     }
                     slots.push((main, main_rect));
+                    slots.push((main_side, main_side_rect));
                     for (k, r) in insets.iter_mut().zip(inset_rects.iter()) {
                         slots.push((k, *r));
                     }
@@ -1248,6 +1410,22 @@ impl Widget for SoundingView<'_> {
                             MIN_RIGHT_MAIN_HEIGHT_FRACTION,
                             MAX_RIGHT_MAIN_HEIGHT_FRACTION,
                         );
+                    resized = true;
+                }
+                if layout.main != PanelKind::Hidden
+                    && layout.main_side != PanelKind::Hidden
+                    && let Some(x) = vertical_resize_handle(
+                        ui,
+                        &painter,
+                        id.with("main_split_width"),
+                        main_rect.max.x,
+                        main_cell.min.y,
+                        main_cell.max.y,
+                        "Drag to resize the two panels sharing the large right cell",
+                    )
+                {
+                    layout.main_split_fraction = ((x - main_cell.min.x) / main_cell.width())
+                        .clamp(MIN_MAIN_SPLIT_FRACTION, MAX_MAIN_SPLIT_FRACTION);
                     resized = true;
                 }
 
@@ -1418,10 +1596,60 @@ mod tests {
         layout.inset_column_fractions = [0.20, 0.22, 0.28, 0.30];
         layout.bottom_column_fractions = [0.25, 0.20, 0.15, 0.18, 0.22];
         layout.bottom_split_fraction = 0.62;
+        layout.main_split_fraction = 0.55;
 
         let tokens = layout.to_tokens();
-        assert!(tokens.contains("|g2:"));
+        assert!(tokens.contains("|g3:"));
         assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
+    }
+
+    #[test]
+    fn a_split_main_cell_round_trips_through_tokens() {
+        let mut layout = SoundingLayout::default();
+        layout.main_side = PanelKind::LocationMap;
+        layout.insets[3] = PanelKind::Streamwiseness;
+
+        let tokens = layout.to_tokens();
+        assert!(tokens.contains("|hodograph,locationmap|"), "{tokens}");
+        assert!(
+            !tokens.contains("|g3:"),
+            "the default split ratio needs no geometry section: {tokens}"
+        );
+        assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout.clone()));
+
+        layout.main_split_fraction = 0.55;
+        let tokens = layout.to_tokens();
+        assert!(tokens.ends_with(";0.55"), "{tokens}");
+        assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
+    }
+
+    #[test]
+    fn a_notes_panel_round_trips_through_tokens() {
+        assert_eq!(PanelKind::Notes.token(), "notes");
+        assert_eq!(PanelKind::from_token("notes"), Some(PanelKind::Notes));
+
+        // The host's target slot is the main cell's side panel; a bottom cell
+        // is the other place a note-sized block fits.
+        let mut layout = SoundingLayout::default();
+        layout.main_side = PanelKind::Notes;
+        layout.bottom[5] = PanelKind::Notes;
+        let tokens = layout.to_tokens();
+        assert!(tokens.contains("|hodograph,notes|"), "{tokens}");
+        assert!(tokens.contains(",streamwiseness,notes|"), "{tokens}");
+        assert_eq!(SoundingLayout::from_tokens(&tokens), Some(layout));
+    }
+
+    #[test]
+    fn legacy_g2_geometry_leaves_the_main_cell_unsplit() {
+        let layout = SoundingLayout::from_tokens(
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|\
+             convectiveindices,kinematics,ship,severeindices,streamwiseness,hidden|250|\
+             g2:0.6,0.5,0.7;0.1,0.1,0.8;0.25,0.25,0.25,0.25;0.25,0.2,0.15,0.2,0.2;0.62",
+        )
+        .expect("g2 geometry");
+        assert_eq!(layout.main_side, PanelKind::Hidden);
+        assert_eq!(layout.main_split_fraction, DEFAULT_MAIN_SPLIT_FRACTION);
+        assert_eq!(layout.bottom_split_fraction, 0.62);
     }
 
     #[test]
@@ -1504,6 +1732,8 @@ mod tests {
             "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250|g2:0.6,0.5,0.7;0.1,0.1,0.8;0.25,0.25,0.25,0.25;0.6,0.2,0.2",
             "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250|g1:0.6,NaN,0.7;0.1,0.1,0.8;0.25,0.25,0.25,0.25;0.6,0.2,0.2",
             "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250|g1:0.6,0.5,0.7;0.1,0.9;0.25,0.25,0.25,0.25;0.6,0.2,0.2",
+            "speed,advection|hodograph,locationmap,slinky|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250",
+            "speed,advection|hodograph|slinky,thetae,srwinds,locationmap|indexboard,streamwiseness,stp|250|g3:0.6,0.5,0.7;0.1,0.1,0.8;0.25,0.25,0.25,0.25;0.2,0.2,0.2,0.2,0.2;0.5",
         ] {
             assert_eq!(SoundingLayout::from_tokens(bad), None, "{bad:?}");
         }
@@ -1589,7 +1819,13 @@ mod tests {
     }
 
     fn every_rect(rects: &PanelRects) -> Vec<Rect> {
-        let mut all = vec![rects.board, rects.skew, rects.header_band, rects.main];
+        let mut all = vec![
+            rects.board,
+            rects.skew,
+            rects.header_band,
+            rects.main,
+            rects.main_side,
+        ];
         all.extend(rects.strips);
         all.extend(rects.insets);
         all.extend(rects.bottom);
@@ -1721,6 +1957,119 @@ mod tests {
         assert!(
             (panel_rects(board, &raw).skew.max.y - 864.0 * MAX_TOP_HEIGHT_FRACTION).abs() < 0.01
         );
+    }
+
+    #[test]
+    fn a_one_panel_main_section_still_gives_the_whole_cell_to_the_main_panel() {
+        // The host's shipped default, i.e. every shared link already in the
+        // wild. The rect numbers were captured from the build before the cell
+        // could be split.
+        let layout = SoundingLayout::from_tokens(
+            "speed,advection|hodograph|slinky,thetae,srwinds,streamwiseness|\
+             convectiveindices,kinematics,locationmap,severeindices,hidden,hidden|195",
+        )
+        .expect("the host's default layout");
+        assert_eq!(layout.main_side, PanelKind::Hidden);
+        assert_eq!(layout.main_split_fraction, DEFAULT_MAIN_SPLIT_FRACTION);
+        assert_eq!(
+            layout.to_tokens(),
+            "speed,advection|hodograph|slinky,thetae,srwinds,streamwiseness|\
+             convectiveindices,kinematics,locationmap,severeindices,hidden,hidden|195"
+        );
+
+        let rects = panel_rects(real_board(egui::pos2(0.0, 0.0)), &layout);
+        assert!((rects.main.min.x - 712.397).abs() < 0.01, "{:?}", rects.main);
+        assert_eq!(rects.main.min.y, HEADER_BAND_HEIGHT);
+        assert_eq!(rects.main.max.x, 1288.0);
+        assert!((rects.main.max.y - 425.367).abs() < 0.01, "{:?}", rects.main);
+        assert_eq!(rects.main_side.size(), Vec2::ZERO);
+    }
+
+    #[test]
+    fn a_hidden_side_panel_ignores_the_split_ratio_completely() {
+        let board = real_board(egui::pos2(0.0, 0.0));
+        let unsplit = panel_rects(board, &SoundingLayout::default());
+        for fraction in [MIN_MAIN_SPLIT_FRACTION, MAX_MAIN_SPLIT_FRACTION] {
+            let mut layout = SoundingLayout::default();
+            layout.main_split_fraction = fraction;
+            let rects = panel_rects(board, &layout);
+            assert_eq!(rects.main, unsplit.main);
+            assert_eq!(rects.main_side.size(), Vec2::ZERO);
+        }
+
+        // A hidden main panel keeps its empty cell too, exactly as it did
+        // before the cell could be shared.
+        let mut layout = SoundingLayout::default();
+        layout.main = PanelKind::Hidden;
+        assert_eq!(panel_rects(board, &layout).main, unsplit.main);
+    }
+
+    #[test]
+    fn the_split_main_cell_tiles_it_exactly_at_the_clamp_extremes() {
+        let board = real_board(egui::pos2(0.0, 0.0));
+        let whole = panel_rects(board, &SoundingLayout::default()).main;
+        for fraction in [MIN_MAIN_SPLIT_FRACTION, MAX_MAIN_SPLIT_FRACTION, -3.0, 9.0] {
+            let mut layout = SoundingLayout::default();
+            layout.main_side = PanelKind::LocationMap;
+            layout.main_split_fraction = fraction;
+            let rects = panel_rects(board, &layout);
+
+            assert_eq!(rects.main.min, whole.min, "{fraction}");
+            assert_eq!(rects.main_side.max, whole.max, "{fraction}");
+            assert_eq!(rects.main.max.y, whole.max.y, "{fraction}");
+            assert_eq!(rects.main_side.min.y, whole.min.y, "{fraction}");
+            // One shared boundary coordinate, so there is no gap and no overlap
+            // whatever the ratio.
+            assert_eq!(rects.main.max.x, rects.main_side.min.x, "{fraction}");
+            assert!(
+                rects.main.width() >= whole.width() * MIN_MAIN_SPLIT_FRACTION - 0.01
+                    && rects.main_side.width()
+                        >= whole.width() * (1.0 - MAX_MAIN_SPLIT_FRACTION) - 0.01,
+                "{fraction}: {rects:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_split_squares_the_hodographs_sub_cell() {
+        // The whole reason to split: the hodograph draws into the largest
+        // centered square of its cell, so at the stock 1.4:1 main cell it wasted
+        // ~166 pt of width. A square sub-cell wastes none of it.
+        let mut layout = SoundingLayout::default();
+        layout.main_side = PanelKind::LocationMap;
+        let rects = panel_rects(real_board(egui::pos2(0.0, 0.0)), &layout);
+        assert!(
+            (rects.main.width() - rects.main.height()).abs() < 1.0,
+            "{:?}",
+            rects.main
+        );
+        let plot = crate::panels::hodo::geometry(rects.main, layout.hodo_zoom_kts).plot;
+        assert!(rects.main.width() - plot.width() < 1.0, "{plot:?}");
+        assert!(rects.main_side.width() > 160.0, "{:?}", rects.main_side);
+    }
+
+    #[test]
+    fn the_hodograph_is_found_wherever_it_sits_including_beside_the_main_panel() {
+        let board = real_board(egui::pos2(0.0, 0.0));
+        let mut layout = SoundingLayout::default();
+        let rects = panel_rects(board, &layout);
+        assert_eq!(hodograph_rect(&layout, &rects), Some(rects.main));
+
+        // As the side panel: the scroll-to-zoom hit test has to follow it there
+        // rather than keep the main cell it no longer owns.
+        layout.main = PanelKind::LocationMap;
+        layout.main_side = PanelKind::Hodograph;
+        let rects = panel_rects(board, &layout);
+        assert_eq!(hodograph_rect(&layout, &rects), Some(rects.main_side));
+        assert!(!rects.main_side.contains(rects.main.center()));
+
+        layout.main_side = PanelKind::Slinky;
+        layout.insets[0] = PanelKind::Hodograph;
+        let rects = panel_rects(board, &layout);
+        assert_eq!(hodograph_rect(&layout, &rects), Some(rects.insets[0]));
+
+        layout.insets[0] = PanelKind::Slinky;
+        assert_eq!(hodograph_rect(&layout, &panel_rects(board, &layout)), None);
     }
 
     #[test]

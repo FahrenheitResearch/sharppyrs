@@ -15,6 +15,21 @@ const MAP_POINT_COLOR: Color32 = Color32::from_rgb(0xFF, 0xDA, 0x00);
 const MAP_FOOTPRINT_COLOR: Color32 = Color32::from_rgb(0x00, 0xD8, 0xE8);
 const PT: f64 = 4.0 / 3.0;
 
+/// Smallest half-span the locator will show on each axis, in degrees.
+///
+/// BOTH are needed. Only the latitude floor used to exist, with longitude falling
+/// out of the cell's aspect — fine while this panel only ever got a cell wider
+/// than tall, but at 0.41 aspect that produced 4.2 degrees of longitude, which
+/// drew four disconnected coastline fragments and nothing recognisable as a
+/// state. The longitude floor is a bit over California's width so the basemap
+/// always carries enough shape to locate a point by.
+///
+/// Each is a FLOOR, so the axis with slack grows and a wide cell is unaffected:
+/// at 2.49 aspect the longitude floor asks for 1.9 degrees of latitude, well
+/// under the 4.0 already there, so nothing about the old placement moves.
+const MIN_HALF_LAT_DEG: f64 = 4.0;
+const MIN_HALF_LON_DEG: f64 = 6.0;
+
 fn map_extent(
     interior: Rect,
     lat: f64,
@@ -23,7 +38,9 @@ fn map_extent(
 ) -> (f64, f64, f64, f64) {
     let cos_lat = lat.to_radians().cos().max(0.35);
     let aspect = (interior.width() / interior.height()) as f64;
-    let mut half_lat = 4.0f64;
+    // Everything is solved in half_lat, because half_lon is derived from it; a
+    // longitude requirement therefore becomes a latitude one through the aspect.
+    let mut half_lat = MIN_HALF_LAT_DEG.max(MIN_HALF_LON_DEG * cos_lat / aspect.max(0.01));
     if let Some(box_) = footprint {
         let required_lat = (lat - box_.south).abs().max((box_.north - lat).abs()) * 1.15;
         let required_lon = (lon - box_.west).abs().max((box_.east - lon).abs()) * 1.15;

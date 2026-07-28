@@ -357,10 +357,18 @@ fn draw_data(
     if !draw_hodo_trace(p, g, prof) {
         return;
     }
-    draw_smv(p, g, fonts, prof, style);
-    draw_corfidi(p, g, fonts, dv);
-    draw_lcl_to_el_mw(p, g, fonts, dv);
-    draw_critical_angle(p, g, fonts, prof, dv, style);
+    // Every marker (and the frame-anchored critical-angle readout) is drawn
+    // first and the marker labels last, as one group: the group layout has to
+    // measure every anchor before it can put any text down (see
+    // `draw_marker_labels`).
+    let mut labels = Vec::new();
+    draw_smv(p, g, prof, style, &mut labels);
+    draw_corfidi(p, g, dv, &mut labels);
+    draw_lcl_to_el_mw(p, g, dv, &mut labels);
+    let fixed: Vec<Rect> = draw_critical_angle(p, g, fonts, prof, dv, style)
+        .into_iter()
+        .collect();
+    draw_marker_labels(p, g, fonts, style, &labels, &fixed);
 }
 
 /// Linear interpolation of `f` at `zt` over ascending `z`
@@ -442,7 +450,13 @@ fn draw_hodo_trace(p: &Painter, g: &Geom, prof: &Profile) -> bool {
 
 /// Port of `plotHodo.drawSMV`: Bunkers +'s and circles, effective-inflow
 /// lines to the right mover, and the "259/48 RM" / "237/68 LM" labels.
-fn draw_smv(p: &Painter, g: &Geom, fonts: &Fonts, prof: &Profile, style: &SkewTStyle) {
+fn draw_smv(
+    p: &Painter,
+    g: &Geom,
+    prof: &Profile,
+    style: &SkewTStyle,
+    labels: &mut Vec<MarkerLabel>,
+) {
     let (rstu, rstv, lstu, lstv) = prof.srwind;
     if !qc(rstu) || !qc(lstu) {
         return;
@@ -478,24 +492,22 @@ fn draw_smv(p: &Painter, g: &Geom, fonts: &Fonts, prof: &Profile, style: &SkewTS
     // Labels in 55x12 rects offset (+2, +5) from the markers.
     let (rm_dir, rm_spd) = comp2vec(rstu, rstv);
     let (lm_dir, lm_spd) = comp2vec(lstu, lstv);
-    p.text(
-        g.pt(rx + 2.0 + 27.5, ry + 5.0 + 6.0),
-        Align2::CENTER_CENTER,
-        format!("{}/{} RM", int2str(rm_dir), int2str(rm_spd)),
-        fonts.label.clone(),
-        style.fg_color,
-    );
-    p.text(
-        g.pt(lx + 2.0 + 27.5, ly + 5.0 + 6.0),
-        Align2::CENTER_CENTER,
-        format!("{}/{} LM", int2str(lm_dir), int2str(lm_spd)),
-        fonts.label.clone(),
-        style.fg_color,
-    );
+    labels.push(MarkerLabel {
+        marker: g.pt(rx, ry),
+        center: g.pt(rx + 2.0 + 27.5, ry + 5.0 + 6.0),
+        text: format!("{}/{} RM", int2str(rm_dir), int2str(rm_spd)),
+        color: style.fg_color,
+    });
+    labels.push(MarkerLabel {
+        marker: g.pt(lx, ly),
+        center: g.pt(lx + 2.0 + 27.5, ly + 5.0 + 6.0),
+        text: format!("{}/{} LM", int2str(lm_dir), int2str(lm_spd)),
+        color: style.fg_color,
+    });
 }
 
 /// Port of `plotHodo.drawCorfidi`: upshear/downshear circles + labels.
-fn draw_corfidi(p: &Painter, g: &Geom, fonts: &Fonts, dv: &DerivedParams) {
+fn draw_corfidi(p: &Painter, g: &Geom, dv: &DerivedParams, labels: &mut Vec<MarkerLabel>) {
     let (up_u, up_v) = dv.corfidi_up;
     let (dn_u, dn_v) = dv.corfidi_dn;
     if !qc(up_u) || !qc(up_v) || !qc(dn_u) || !qc(dn_v) {
@@ -510,24 +522,22 @@ fn draw_corfidi(p: &Painter, g: &Geom, fonts: &Fonts, dv: &DerivedParams) {
     // Labels in 60x10 rects offset (+1, +3).
     let (up_dir, up_spd) = comp2vec(up_u, up_v);
     let (dn_dir, dn_spd) = comp2vec(dn_u, dn_v);
-    p.text(
-        g.pt(ux + 1.0 + 30.0, uy + 3.0 + 5.0),
-        Align2::CENTER_CENTER,
-        format!("UP={}/{}", int2str(up_dir), int2str(up_spd)),
-        fonts.label.clone(),
-        CORFIDI_COLOR,
-    );
-    p.text(
-        g.pt(dx + 1.0 + 30.0, dy + 3.0 + 5.0),
-        Align2::CENTER_CENTER,
-        format!("DN={}/{}", int2str(dn_dir), int2str(dn_spd)),
-        fonts.label.clone(),
-        CORFIDI_COLOR,
-    );
+    labels.push(MarkerLabel {
+        marker: g.pt(ux, uy),
+        center: g.pt(ux + 1.0 + 30.0, uy + 3.0 + 5.0),
+        text: format!("UP={}/{}", int2str(up_dir), int2str(up_spd)),
+        color: CORFIDI_COLOR,
+    });
+    labels.push(MarkerLabel {
+        marker: g.pt(dx, dy),
+        center: g.pt(dx + 1.0 + 30.0, dy + 3.0 + 5.0),
+        text: format!("DN={}/{}", int2str(dn_dir), int2str(dn_spd)),
+        color: CORFIDI_COLOR,
+    });
 }
 
 /// Port of `plotHodo.drawLCLtoEL_MW`: the LCL-EL mean wind square + label.
-fn draw_lcl_to_el_mw(p: &Painter, g: &Geom, fonts: &Fonts, dv: &DerivedParams) {
+fn draw_lcl_to_el_mw(p: &Painter, g: &Geom, dv: &DerivedParams, labels: &mut Vec<MarkerLabel>) {
     let (mw_dir, mw_spd) = dv.mean_lcl_el;
     if !qc(mw_dir) || !qc(mw_spd) {
         return;
@@ -542,17 +552,18 @@ fn draw_lcl_to_el_mw(p: &Painter, g: &Geom, fonts: &Fonts, dv: &DerivedParams) {
         StrokeKind::Middle,
     );
     // Label in a 40x12 rect offset (+1, +5).
-    p.text(
-        g.pt(mx + 1.0 + 20.0, my + 5.0 + 6.0),
-        Align2::CENTER_CENTER,
-        format!("{}/{}", int2str(mw_dir), int2str(mw_spd)),
-        fonts.label.clone(),
-        MEAN_LCL_EL_COLOR,
-    );
+    labels.push(MarkerLabel {
+        marker: g.pt(mx, my),
+        center: g.pt(mx + 1.0 + 20.0, my + 5.0 + 6.0),
+        text: format!("{}/{}", int2str(mw_dir), int2str(mw_spd)),
+        color: MEAN_LCL_EL_COLOR,
+    });
 }
 
 /// Port of `plotHodo.drawCriticalAngle`: the sfc -> 500 m AGL line plus the
-/// "Critical Angle = 56 deg" readout at the bottom-left of the frame.
+/// "Critical Angle = 56 deg" readout at the bottom-left of the frame. Returns
+/// the readout's blanked box when it is drawn, so the marker labels can treat
+/// it as occupied space (its position is fixed to the frame, theirs is not).
 fn draw_critical_angle(
     p: &Painter,
     g: &Geom,
@@ -560,7 +571,7 @@ fn draw_critical_angle(
     prof: &Profile,
     dv: &DerivedParams,
     style: &SkewTStyle,
-) {
+) -> Option<Rect> {
     let inner = &prof.inner;
     let sfc_pres = inner.pres[inner.sfc];
     let pres_500m = inner.pres_at_height(inner.to_msl(500.0));
@@ -579,31 +590,346 @@ fn draw_critical_angle(
         || !qc(u500)
         || !qc(v500)
     {
-        return;
+        return None;
     }
     let (sx, sy) = g.uv_to_pix(sfc_u, sfc_v);
     let (x5, y5) = g.uv_to_pix(u500, v500);
     p.line_segment([g.pt(sx, sy), g.pt(x5, y5)], Stroke::new(1.0, CRIT_LINE_COLOR));
 
     let (rstu, _, lstu, _) = prof.srwind;
-    if qc(rstu) && qc(lstu) && qc(dv.right_critical_angle) {
-        // Half-alpha bg blank behind the text (setBlackPen), then the readout.
-        let bg = style.bg_color;
-        p.rect_filled(
-            Rect::from_min_size(
-                g.pt(15.0, g.hgt - 36.0),
-                Vec2::new(100.0, (fonts.critical_height + 5.0) as f32),
-            ),
-            0.0,
-            Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 128),
+    if !qc(rstu) || !qc(lstu) || !qc(dv.right_critical_angle) {
+        return None;
+    }
+    // Half-alpha bg blank behind the text (setBlackPen), then the readout.
+    let bg = style.bg_color;
+    let blank = Rect::from_min_size(
+        g.pt(15.0, g.hgt - 36.0),
+        Vec2::new(100.0, (fonts.critical_height + 5.0) as f32),
+    );
+    p.rect_filled(
+        blank,
+        0.0,
+        Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), 128),
+    );
+    p.text(
+        g.pt(15.0, g.hgt - 36.0),
+        Align2::LEFT_TOP,
+        format!("Critical Angle = {}\u{00B0}", int2str(dv.right_critical_angle)),
+        fonts.critical.clone(),
+        CRIT_TEXT_COLOR,
+    );
+    Some(blank)
+}
+
+// ----------------------------------------------------------------------
+// Marker labels
+//
+// `plotData` places each readout at a fixed pixel offset from its own marker,
+// which only works while the markers are apart. In weak flow the Bunkers pair,
+// both Corfidi nodes and the LCL-EL mean wind all collapse toward the origin
+// and the five labels print on top of each other -- observed inside a ~40 px
+// circle, and unreadable at every zoom because the offsets are in pixels, so no
+// amount of scaling separates them.
+//
+// The labels are therefore laid out as a group once every marker is down. When
+// the measured rects touch nothing the group is drawn at exactly the original
+// offsets, so a plate whose markers are already separated is pixel-for-pixel
+// what it was. Only a tangled group is spread, by sliding labels along y: they
+// are ~4x wider than tall, so y is the axis of least travel, and sliding one
+// axis only keeps each label horizontally where its marker put it. Order is the
+// order the data pass queues them (RM, LM, UP, DN, mean wind) so the same
+// profile always lays out the same way, and a spread group gets the opaque
+// blank `cursor_marker` uses, because a displaced label no longer has the clear
+// space beside its own marker to itself and would otherwise read through the
+// trace and the ring labels.
+// ----------------------------------------------------------------------
+
+/// A marker readout queued for the group layout pass.
+struct MarkerLabel {
+    /// Center of the drawn marker. The label may cover its own marker -- the
+    /// "240/19 RM" beside its + is the whole SHARPpy idiom -- but covering one
+    /// of the others would hide data.
+    marker: Pos2,
+    /// Where `plotData` centers the text. Kept verbatim as the first choice.
+    center: Pos2,
+    text: String,
+    color: Color32,
+}
+
+/// Half-size of a marker's keep-out box: the Bunkers circles are r=5, the
+/// mean-wind square +/-4 with a 2 px pen.
+const MARKER_KEEP_OUT: f32 = 6.0;
+/// Clear space kept between two spread labels, and between a label and the
+/// frame -- the panel is clipped to the frame, so a label pushed out is lost.
+const LABEL_GAP: f32 = 3.0;
+/// Padding of the blank drawn behind a spread label (`cursor_marker`'s).
+const BLANK_PAD: Vec2 = Vec2::new(2.0, 1.0);
+
+fn draw_marker_labels(
+    p: &Painter,
+    g: &Geom,
+    fonts: &Fonts,
+    style: &SkewTStyle,
+    labels: &[MarkerLabel],
+    fixed: &[Rect],
+) {
+    // A marker outside the frame is clipped away; pulling its label into view
+    // would leave a readout pointing at nothing.
+    let queued: Vec<&MarkerLabel> = labels
+        .iter()
+        .filter(|l| g.rect.contains(l.marker))
+        .collect();
+    let galleys: Vec<_> = queued
+        .iter()
+        .map(|l| p.layout_no_wrap(l.text.clone(), fonts.label.clone(), l.color))
+        .collect();
+    // `Painter::text` with Align2::CENTER_CENTER lands the galley at exactly
+    // this rect's min, which is what keeps the untangled case unchanged.
+    let wanted: Vec<Rect> = queued
+        .iter()
+        .zip(&galleys)
+        .map(|(l, galley)| Rect::from_center_size(l.center, galley.size()))
+        .collect();
+
+    let tangled = labels_are_tangled(&wanted, fixed);
+    let placed = if tangled {
+        let markers: Vec<Rect> = queued
+            .iter()
+            .map(|l| Rect::from_center_size(l.marker, Vec2::splat(2.0 * MARKER_KEEP_OUT)))
+            .collect();
+        let spread = spread_labels(&wanted, &markers, fixed, g.rect.shrink(LABEL_GAP));
+        // All the blanks before any of the text: the boxes never overlap, but
+        // drawing them interleaved would still let a later blank clip the
+        // descenders of an earlier label.
+        for r in &spread {
+            p.rect_filled(r.expand2(BLANK_PAD), 0.0, style.bg_color);
+        }
+        spread
+    } else {
+        wanted
+    };
+
+    for ((l, galley), r) in queued.iter().zip(galleys).zip(&placed) {
+        p.galley(r.min, galley, l.color);
+    }
+}
+
+/// Whether any label in the group touches another one or a frame-anchored
+/// readout, i.e. whether the group needs spreading at all.
+fn labels_are_tangled(wanted: &[Rect], fixed: &[Rect]) -> bool {
+    wanted.iter().enumerate().any(|(i, a)| {
+        fixed.iter().any(|f| f.intersects(*a)) || wanted[i + 1..].iter().any(|b| a.intersects(*b))
+    })
+}
+
+/// Slide each label along y until it clears the ones already placed, every
+/// marker but its own, and `fixed`, staying inside `safe`. One rect per
+/// `wanted`, in order and at the same size, so the result is a function of the
+/// data alone. `markers` is parallel to `wanted`.
+fn spread_labels(wanted: &[Rect], markers: &[Rect], fixed: &[Rect], safe: Rect) -> Vec<Rect> {
+    let mut placed: Vec<Rect> = Vec::with_capacity(wanted.len());
+    for (i, want) in wanted.iter().enumerate() {
+        let mut blocked = placed.clone();
+        blocked.extend_from_slice(fixed);
+        for (j, m) in markers.iter().enumerate() {
+            if j != i {
+                blocked.push(*m);
+            }
+        }
+        let start = clamp_inside(*want, safe);
+        let down = slide_clear(start, &blocked, safe, 1.0);
+        let up = slide_clear(start, &blocked, safe, -1.0);
+        placed.push(match (down, up) {
+            // Least travel, downward on a tie -- the original offsets are
+            // downward, so a two-label group keeps reading the familiar way.
+            (Some(d), Some(u)) => {
+                if (u.min.y - start.min.y).abs() < (d.min.y - start.min.y).abs() {
+                    u
+                } else {
+                    d
+                }
+            }
+            (Some(d), None) => d,
+            (None, Some(u)) => u,
+            // Nowhere to go (a panel too small to stack five readouts in):
+            // in view and over its blank beats pushed out of the frame.
+            (None, None) => start,
+        });
+    }
+    placed
+}
+
+/// Push `r` along `dir` past one blocker at a time until it is clear, or `None`
+/// if it leaves `safe` first. Each step moves strictly in `dir`, so a blocker
+/// already passed cannot come back and the walk terminates.
+fn slide_clear(mut r: Rect, blocked: &[Rect], safe: Rect, dir: f32) -> Option<Rect> {
+    for _ in 0..=blocked.len() {
+        let Some(hit) = blocked.iter().find(|b| b.intersects(r)) else {
+            return Some(r);
+        };
+        let dy = if dir > 0.0 {
+            hit.max.y + LABEL_GAP - r.min.y
+        } else {
+            hit.min.y - LABEL_GAP - r.max.y
+        };
+        r = r.translate(Vec2::new(0.0, dy));
+        if r.min.y < safe.min.y || r.max.y > safe.max.y {
+            return None;
+        }
+    }
+    None
+}
+
+/// Shift `r` back inside `safe`, never resizing it (the text is already laid
+/// out) -- a label wider than `safe` splits the difference.
+fn clamp_inside(r: Rect, safe: Rect) -> Rect {
+    let dx = (safe.min.x - r.min.x).max(0.0) + (safe.max.x - r.max.x).min(0.0);
+    let dy = (safe.min.y - r.min.y).max(0.0) + (safe.max.y - r.max.y).min(0.0);
+    r.translate(Vec2::new(dx, dy))
+}
+
+#[cfg(test)]
+mod marker_label_tests {
+    use super::*;
+
+    /// A 400 px plot, the size the diagnostic board draws the hodograph at.
+    fn plot() -> Rect {
+        Rect::from_min_size(Pos2::new(1350.0, 45.0), Vec2::splat(400.0))
+    }
+
+    /// The five readouts of the plate that motivated this, in queue order, all
+    /// anchored to `marker`: the weak-flow case where RM, LM, both Corfidi
+    /// nodes and the mean wind land on the same pixel. Sizes and offsets are
+    /// the laid-out widths of "240/19 RM", "58/10 LM", "UP=165/13",
+    /// "DN=139/10" and "0/13" at the label font.
+    fn coincident_group(marker: Pos2) -> (Vec<Rect>, Vec<Rect>) {
+        let queued = [
+            (29.5, 11.0, 56.0, 14.0),
+            (29.5, 11.0, 53.0, 14.0),
+            (31.0, 8.0, 58.0, 14.0),
+            (31.0, 8.0, 58.0, 14.0),
+            (21.0, 11.0, 30.0, 14.0),
+        ];
+        let wanted = queued
+            .iter()
+            .map(|(dx, dy, w, h)| {
+                Rect::from_center_size(marker + Vec2::new(*dx, *dy), Vec2::new(*w, *h))
+            })
+            .collect();
+        let markers = vec![
+            Rect::from_center_size(marker, Vec2::splat(2.0 * MARKER_KEEP_OUT));
+            queued.len()
+        ];
+        (wanted, markers)
+    }
+
+    fn pairs(placed: &[Rect]) -> impl Iterator<Item = (usize, usize)> {
+        let n = placed.len();
+        (0..n).flat_map(move |i| (i + 1..n).map(move |j| (i, j)))
+    }
+
+    #[test]
+    fn coincident_storm_motion_labels_are_spread_until_none_overlaps() {
+        let plot = plot();
+        let (wanted, markers) = coincident_group(plot.center());
+        assert!(
+            labels_are_tangled(&wanted, &[]),
+            "five labels on one marker must count as tangled"
         );
-        p.text(
-            g.pt(15.0, g.hgt - 36.0),
-            Align2::LEFT_TOP,
-            format!("Critical Angle = {}\u{00B0}", int2str(dv.right_critical_angle)),
-            fonts.critical.clone(),
-            CRIT_TEXT_COLOR,
-        );
+
+        let placed = spread_labels(&wanted, &markers, &[], plot.shrink(LABEL_GAP));
+
+        assert_eq!(placed.len(), wanted.len());
+        for (i, j) in pairs(&placed) {
+            assert!(
+                !placed[i].intersects(placed[j]),
+                "labels {i} and {j} still overlap: {:?} vs {:?}",
+                placed[i],
+                placed[j]
+            );
+        }
+        for (i, r) in placed.iter().enumerate() {
+            assert_eq!(r.size(), wanted[i].size(), "label {i} was resized");
+            assert_eq!(r.min.x, wanted[i].min.x, "label {i} moved off its marker");
+        }
+    }
+
+    #[test]
+    fn a_spread_label_stays_inside_the_frame_even_against_the_bottom_edge() {
+        let plot = plot();
+        // Markers this low leave no room below for the stack, so it has to go up.
+        let (wanted, markers) = coincident_group(Pos2::new(plot.center().x, plot.max.y - 12.0));
+        let safe = plot.shrink(LABEL_GAP);
+
+        let placed = spread_labels(&wanted, &markers, &[], safe);
+
+        for (i, r) in placed.iter().enumerate() {
+            assert!(safe.contains_rect(*r), "label {i} left the frame: {r:?}");
+        }
+        for (i, j) in pairs(&placed) {
+            assert!(!placed[i].intersects(placed[j]), "labels {i} and {j} overlap");
+        }
+    }
+
+    #[test]
+    fn a_spread_label_never_covers_someone_elses_marker() {
+        let plot = plot();
+        let (wanted, markers) = coincident_group(plot.center());
+
+        let placed = spread_labels(&wanted, &markers, &[], plot.shrink(LABEL_GAP));
+
+        for (i, r) in placed.iter().enumerate() {
+            for (j, m) in markers.iter().enumerate() {
+                assert!(
+                    i == j || !r.intersects(*m),
+                    "label {i} covers marker {j}: {r:?} vs {m:?}"
+                );
+            }
+        }
+    }
+
+    /// The critical-angle blank: fixed to the frame at (15, hgt - 36).
+    fn crit_readout(plot: Rect) -> Rect {
+        Rect::from_min_size(
+            plot.min + Vec2::new(15.0, plot.height() - 36.0),
+            Vec2::new(100.0, 21.0),
+        )
+    }
+
+    #[test]
+    fn a_label_landing_on_the_critical_angle_readout_is_moved_off_it() {
+        let plot = plot();
+        let readout = crit_readout(plot);
+        let marker = readout.center();
+        let wanted = vec![Rect::from_center_size(
+            marker + Vec2::new(29.5, 11.0),
+            Vec2::new(56.0, 14.0),
+        )];
+        let markers = vec![Rect::from_center_size(marker, Vec2::splat(2.0 * MARKER_KEEP_OUT))];
+        assert!(labels_are_tangled(&wanted, &[readout]));
+
+        let placed = spread_labels(&wanted, &markers, &[readout], plot.shrink(LABEL_GAP));
+
+        assert!(!placed[0].intersects(readout), "{:?}", placed[0]);
+        assert!(plot.shrink(LABEL_GAP).contains_rect(placed[0]));
+    }
+
+    #[test]
+    fn labels_on_a_strong_flow_plate_take_the_unchanged_path() {
+        // Markers tens of knots apart at the default zoom, which is the case
+        // that must stay pixel-for-pixel what it was: `labels_are_tangled` is
+        // the only gate on that, so assert on it.
+        let plot = plot();
+        let wanted: Vec<Rect> = [
+            Vec2::new(-60.0, -80.0),
+            Vec2::new(80.0, 20.0),
+            Vec2::new(-10.0, 60.0),
+        ]
+        .iter()
+        .map(|d| Rect::from_center_size(plot.center() + *d + Vec2::new(29.5, 11.0), Vec2::new(56.0, 14.0)))
+        .collect();
+
+        assert!(!labels_are_tangled(&wanted, &[crit_readout(plot)]));
     }
 }
 
