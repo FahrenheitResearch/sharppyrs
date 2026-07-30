@@ -120,10 +120,12 @@ impl SkewTStyle {
                 FontFamily::Name(crate::FONT_FAMILY.into()),
                 FontFamily::Name(crate::FONT_FAMILY_BOLD.into()),
             ),
-            SoundingFontPreset::CleanProportional =>
-                (FontFamily::Proportional, FontFamily::Proportional),
-            SoundingFontPreset::TechnicalMonospace =>
-                (FontFamily::Monospace, FontFamily::Monospace),
+            SoundingFontPreset::CleanProportional => {
+                (FontFamily::Proportional, FontFamily::Proportional)
+            }
+            SoundingFontPreset::TechnicalMonospace => {
+                (FontFamily::Monospace, FontFamily::Monospace)
+            }
         };
         self
     }
@@ -154,7 +156,11 @@ impl SkewTStyle {
 }
 
 fn normalized_text_scale(scale: f32) -> f32 {
-    if scale.is_finite() { scale.clamp(0.5, 2.0) } else { 1.0 }
+    if scale.is_finite() {
+        scale.clamp(0.5, 2.0)
+    } else {
+        1.0
+    }
 }
 
 /// The Skew-T widget. Create with [`SkewT::new`], configure with the builder
@@ -308,8 +314,8 @@ impl Geom {
 
     /// (temperature C, pressure hPa) -> x (widget-local px).
     fn tmpc_to_pix(&self, t: f64, p: f64) -> f64 {
-        let scl1 = self.brtmpc
-            - ((self.bry - self.pres_to_pix(p)) / (self.bry - self.tpad)) * self.yrange;
+        let scl1 =
+            self.brtmpc - ((self.bry - self.pres_to_pix(p)) / (self.bry - self.tpad)) * self.yrange;
         self.brx - ((scl1 - t) / self.xrange) * (self.brx - self.lpad)
     }
 
@@ -323,10 +329,7 @@ impl Geom {
 
     /// Widget-local -> screen position.
     fn pt(&self, x: f64, y: f64) -> Pos2 {
-        Pos2::new(
-            self.rect.min.x + x as f32,
-            self.rect.min.y + y as f32,
-        )
+        Pos2::new(self.rect.min.x + x as f32, self.rect.min.y + y as f32)
     }
 
     /// Screen-space rect from widget-local coordinates.
@@ -412,6 +415,199 @@ struct Fonts {
     hgz: FontId,
     esrh_height: f64,
     title_height: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SurfaceTraceLabel {
+    value_c: f64,
+    anchor_x: f32,
+    anchor_y: f32,
+    color: Color32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SurfaceLabelMetric {
+    preferred_center: f32,
+    width: f32,
+}
+
+const SURFACE_LABEL_GAP: f32 = 3.0;
+
+/// Move close surface-value labels apart without changing their left-to-right
+/// meteorological order. Well-separated labels keep their trace positions;
+/// only a colliding group is packed, and an edge group is pulled back inside
+/// the plot.
+fn spread_surface_label_centers(labels: &[SurfaceLabelMetric], left: f32, right: f32) -> Vec<f32> {
+    if labels.is_empty() {
+        return Vec::new();
+    }
+
+    let mut order: Vec<usize> = (0..labels.len()).collect();
+    order.sort_by(|&a, &b| {
+        labels[a]
+            .preferred_center
+            .total_cmp(&labels[b].preferred_center)
+            .then(a.cmp(&b))
+    });
+
+    let available = (right - left).max(0.0);
+    let label_width = |index: usize| labels[index].width.max(0.0);
+    let total_width: f32 = order.iter().map(|&index| label_width(index)).sum();
+    let gap = if order.len() > 1 {
+        SURFACE_LABEL_GAP.min(((available - total_width).max(0.0)) / (order.len() - 1) as f32)
+    } else {
+        0.0
+    };
+
+    let bounded_preference = |index: usize| {
+        let half = label_width(index) / 2.0;
+        let min = left + half;
+        let max = right - half;
+        if min <= max {
+            labels[index].preferred_center.clamp(min, max)
+        } else {
+            (left + right) / 2.0
+        }
+    };
+
+    let mut centers = vec![0.0; labels.len()];
+    centers[order[0]] = bounded_preference(order[0]);
+    for position in 1..order.len() {
+        let previous = order[position - 1];
+        let current = order[position];
+        let minimum =
+            centers[previous] + label_width(previous) / 2.0 + gap + label_width(current) / 2.0;
+        centers[current] = bounded_preference(current).max(minimum);
+    }
+
+    // If forward packing crossed the right edge, repack that group from the
+    // right. This preserves preferred positions for labels that were already
+    // separated while keeping a close edge group wholly visible.
+    let last = *order.last().expect("non-empty label order");
+    centers[last] = centers[last].min(right - label_width(last) / 2.0);
+    for position in (0..order.len() - 1).rev() {
+        let current = order[position];
+        let next = order[position + 1];
+        let maximum = centers[next] - label_width(next) / 2.0 - gap - label_width(current) / 2.0;
+        centers[current] = centers[current].min(maximum);
+    }
+
+    // This shift is needed only for a left-edge group (or a plot narrower
+    // than the labels themselves). Normal, feasible layouts remain unchanged.
+    let first = order[0];
+    let first_min = left + label_width(first) / 2.0;
+    if centers[first] < first_min {
+        let shift = first_min - centers[first];
+        for center in &mut centers {
+            *center += shift;
+        }
+    }
+
+    centers
+}
+
+#[cfg(test)]
+mod surface_label_layout_tests {
+    use super::*;
+
+    fn assert_clear_and_bounded(
+        labels: &[SurfaceLabelMetric],
+        centers: &[f32],
+        left: f32,
+        right: f32,
+    ) {
+        for (label, &center) in labels.iter().zip(centers) {
+            assert!(
+                center - label.width / 2.0 >= left - 0.01,
+                "label at {center} crossed the left edge"
+            );
+            assert!(
+                center + label.width / 2.0 <= right + 0.01,
+                "label at {center} crossed the right edge"
+            );
+        }
+        for i in 0..labels.len() {
+            for j in i + 1..labels.len() {
+                let required = (labels[i].width + labels[j].width) / 2.0 + SURFACE_LABEL_GAP;
+                assert!(
+                    (centers[i] - centers[j]).abs() >= required - 0.01,
+                    "surface labels {i} and {j} still collide: {centers:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn close_dewpoint_wetbulb_and_temperature_labels_are_spread() {
+        let g = Geom::new(Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0)));
+        let pressure = 980.0;
+        // Representative saturated-profile labels from the snapshot repro:
+        // Tw and Td sit between/next to T, and caller order is not x order.
+        let labels = [
+            SurfaceLabelMetric {
+                preferred_center: g.tmpc_to_pix(24.4, pressure) as f32,
+                width: 28.0,
+            },
+            SurfaceLabelMetric {
+                preferred_center: g.tmpc_to_pix(27.2, pressure) as f32,
+                width: 28.0,
+            },
+            SurfaceLabelMetric {
+                preferred_center: g.tmpc_to_pix(23.3, pressure) as f32,
+                width: 28.0,
+            },
+        ];
+
+        let centers = spread_surface_label_centers(&labels, g.lpad as f32, g.brx as f32);
+
+        assert_clear_and_bounded(&labels, &centers, g.lpad as f32, g.brx as f32);
+        assert!(centers[2] < centers[0] && centers[0] < centers[1]);
+    }
+
+    #[test]
+    fn separated_surface_labels_keep_their_trace_positions() {
+        let labels = [
+            SurfaceLabelMetric {
+                preferred_center: 300.0,
+                width: 24.0,
+            },
+            SurfaceLabelMetric {
+                preferred_center: 100.0,
+                width: 24.0,
+            },
+            SurfaceLabelMetric {
+                preferred_center: 200.0,
+                width: 24.0,
+            },
+        ];
+
+        assert_eq!(
+            spread_surface_label_centers(&labels, 50.0, 350.0),
+            vec![300.0, 100.0, 200.0]
+        );
+    }
+
+    #[test]
+    fn colliding_right_edge_group_is_pulled_wholly_inside_the_plot() {
+        let labels = [
+            SurfaceLabelMetric {
+                preferred_center: 286.0,
+                width: 30.0,
+            },
+            SurfaceLabelMetric {
+                preferred_center: 292.0,
+                width: 30.0,
+            },
+            SurfaceLabelMetric {
+                preferred_center: 298.0,
+                width: 30.0,
+            },
+        ];
+
+        let centers = spread_surface_label_centers(&labels, 50.0, 300.0);
+
+        assert_clear_and_bounded(&labels, &centers, 50.0, 300.0);
+    }
 }
 
 impl Fonts {
@@ -738,32 +934,39 @@ impl SkewT<'_> {
         self.draw_titles(painter, g, fonts);
 
         // Wetbulb, temperature, virtual temperature traces.
-        self.draw_trace(
+        let mut surface_labels = Vec::with_capacity(3);
+        if let Some(label) = self.draw_trace(
             &dp,
-            painter,
             g,
-            fonts,
             &prof.inner.wetbulb,
             &prof.inner.pres,
             st.wetbulb_color,
             1.0,
             false,
             true,
-        );
-        self.draw_trace(
+        ) {
+            surface_labels.push(label);
+        }
+        if let Some(label) = self.draw_trace(
             &dp,
-            painter,
             g,
-            fonts,
             &prof.inner.tmpc,
             &prof.inner.pres,
             st.temp_color,
             3.0,
             false,
             true,
-        );
-        self.draw_trace(
-            &dp, painter, g, fonts, &prof.inner.vtmp, &prof.inner.pres, st.temp_color, 1.0, true,
+        ) {
+            surface_labels.push(label);
+        }
+        let _ = self.draw_trace(
+            &dp,
+            g,
+            &prof.inner.vtmp,
+            &prof.inner.pres,
+            st.temp_color,
+            1.0,
+            true,
             false,
         );
 
@@ -772,18 +975,19 @@ impl SkewT<'_> {
         self.draw_temp_levels(&dp, g, fonts, pcl);
 
         // Dewpoint trace.
-        self.draw_trace(
+        if let Some(label) = self.draw_trace(
             &dp,
-            painter,
             g,
-            fonts,
             &prof.inner.dwpc,
             &prof.inner.pres,
             st.dewp_color,
             3.0,
             false,
             true,
-        );
+        ) {
+            surface_labels.push(label);
+        }
+        self.draw_surface_labels(painter, g, fonts, &surface_labels);
 
         // Height markers.
         for h in [0.0, 1000.0, 3000.0, 6000.0, 9000.0, 12000.0, 15000.0] {
@@ -804,10 +1008,8 @@ impl SkewT<'_> {
         self.draw_parcel_levels(&dp, g, fonts, pcl);
 
         // Wind barbs (clip extended by bpad at the bottom like the original).
-        let barb_clip = Rect::from_min_max(
-            g.pt(g.lpad, g.tpad),
-            g.pt(g.wid + g.rpad, g.bry + g.bpad),
-        );
+        let barb_clip =
+            Rect::from_min_max(g.pt(g.lpad, g.tpad), g.pt(g.wid + g.rpad, g.bry + g.bpad));
         let bp = painter.with_clip_rect(barb_clip);
         self.draw_barbs(&bp, g);
 
@@ -879,60 +1081,112 @@ impl SkewT<'_> {
     fn draw_trace(
         &self,
         dp: &Painter,
-        painter: &Painter,
         g: &Geom,
-        fonts: &Fonts,
         data: &[f64],
         pres: &[f64],
         color: Color32,
         width: f32,
         dashed: bool,
         label: bool,
-    ) {
-        let st = &self.style;
+    ) -> Option<SurfaceTraceLabel> {
         let mut pts: Vec<Pos2> = Vec::new();
-        let mut first: Option<(f64, f64)> = None;
+        let mut first: Option<SurfaceTraceLabel> = None;
         for i in 0..data.len().min(pres.len()) {
             if data[i].is_finite() && pres[i].is_finite() {
                 let x = g.tmpc_to_pix(data[i], pres[i]);
                 let y = g.pres_to_pix(pres[i]);
                 if first.is_none() {
-                    first = Some((data[i], x));
+                    first = Some(SurfaceTraceLabel {
+                        value_c: data[i],
+                        anchor_x: x as f32,
+                        anchor_y: y as f32,
+                        color,
+                    });
                 }
                 pts.push(g.pt(x, y));
             }
         }
         if pts.len() < 2 {
-            return;
+            return None;
         }
         let stroke = Stroke::new(width, color);
         if dashed {
             dp.extend(Shape::dashed_line(&pts, stroke, 5.0, 3.0));
         } else {
-            dp.add(Shape::line(pts.clone(), stroke));
+            dp.add(Shape::line(pts, stroke));
         }
 
-        if label {
-            if let Some((val, x0)) = first {
-                let y0 = g.pres_to_pix(pres.iter().cloned().find(|p| p.is_finite()).unwrap_or(1000.0));
+        label.then_some(first).flatten()
+    }
+
+    fn draw_surface_labels(
+        &self,
+        painter: &Painter,
+        g: &Geom,
+        fonts: &Fonts,
+        labels: &[SurfaceTraceLabel],
+    ) {
+        struct PreparedLabel {
+            text: String,
+            anchor: SurfaceTraceLabel,
+            width: f32,
+            height: f32,
+        }
+
+        let prepared: Vec<PreparedLabel> = labels
+            .iter()
+            .copied()
+            .map(|anchor| {
                 // Surface units default: Fahrenheit (like the original config).
-                let text = int2str(thermo::ctof(val));
-                let galley = painter.layout_no_wrap(text.clone(), fonts.env_trace.clone(), color);
-                let (tw, th) = (galley.size().x as f64 + 4.0, galley.size().y as f64 + 2.0);
-                // Unclipped, like the original (setClipping(False)).
-                painter.rect_filled(
-                    g.local_rect(x0 - tw / 2.0, y0 + 4.0, tw, th),
-                    0.0,
-                    st.bg_color,
-                );
-                painter.text(
-                    g.pt(x0, y0 + 4.0 + th / 2.0),
-                    Align2::CENTER_CENTER,
+                let text = int2str(thermo::ctof(anchor.value_c));
+                let galley =
+                    painter.layout_no_wrap(text.clone(), fonts.env_trace.clone(), anchor.color);
+                PreparedLabel {
                     text,
-                    fonts.env_trace.clone(),
-                    color,
+                    anchor,
+                    width: galley.size().x + 4.0,
+                    height: galley.size().y + 2.0,
+                }
+            })
+            .collect();
+        let metrics: Vec<SurfaceLabelMetric> = prepared
+            .iter()
+            .map(|label| SurfaceLabelMetric {
+                preferred_center: label.anchor.anchor_x,
+                width: label.width,
+            })
+            .collect();
+        let centers = spread_surface_label_centers(&metrics, g.lpad as f32, g.brx as f32);
+
+        for (label, center_x) in prepared.iter().zip(centers) {
+            let top_y = label.anchor.anchor_y + 4.0;
+            if (center_x - label.anchor.anchor_x).abs() > 0.5 {
+                painter.line_segment(
+                    [
+                        g.pt(label.anchor.anchor_x as f64, label.anchor.anchor_y as f64),
+                        g.pt(center_x as f64, top_y as f64),
+                    ],
+                    Stroke::new(1.0, label.anchor.color),
                 );
             }
+            // Unclipped, like the original (setClipping(False)).
+            painter.rect_filled(
+                g.local_rect(
+                    (center_x - label.width / 2.0) as f64,
+                    top_y as f64,
+                    label.width as f64,
+                    label.height as f64,
+                ),
+                0.0,
+                self.style.bg_color,
+            );
+            painter.text(
+                g.pt(center_x as f64, (top_y + label.height / 2.0) as f64),
+                Align2::CENTER_CENTER,
+                &label.text,
+                fonts.env_trace.clone(),
+                label.anchor.color,
+            );
         }
     }
 
@@ -1070,7 +1324,10 @@ impl SkewT<'_> {
         if !qc(pbot) || !qc(ptop) || !(lr >= 4.5) {
             return;
         }
-        let x1 = g.tmpc_to_pix(prof.inner.interp_by_pressure(&prof.inner.vtmp, pbot) + 5.0, pbot);
+        let x1 = g.tmpc_to_pix(
+            prof.inner.interp_by_pressure(&prof.inner.vtmp, pbot) + 5.0,
+            pbot,
+        );
         let y1 = g.pres_to_pix(pbot);
         let y2 = g.pres_to_pix(ptop);
         dp.rect_filled(
@@ -1343,10 +1600,7 @@ impl SkewT<'_> {
                 } else {
                     st.cin_fill_color
                 };
-                fill(
-                    &[(xp0, y0), (xp1, y1), (xe1, y1), (xe0, y0)],
-                    color,
-                );
+                fill(&[(xp0, y0), (xp1, y1), (xe1, y1), (xe0, y0)], color);
             } else {
                 let f = d0 / (d0 - d1);
                 let ym = y0 + f * (y1 - y0);
@@ -1534,8 +1788,14 @@ mod typography_tests {
     #[test]
     fn font_presets_are_cross_platform_egui_or_bundled_families() {
         let space = SkewTStyle::default().with_font_preset(SoundingFontPreset::SpaceGrotesk);
-        assert_eq!(space.regular_font(10.0).family, FontFamily::Name(crate::FONT_FAMILY.into()));
-        assert_eq!(space.bold_font(10.0).family, FontFamily::Name(crate::FONT_FAMILY_BOLD.into()));
+        assert_eq!(
+            space.regular_font(10.0).family,
+            FontFamily::Name(crate::FONT_FAMILY.into())
+        );
+        assert_eq!(
+            space.bold_font(10.0).family,
+            FontFamily::Name(crate::FONT_FAMILY_BOLD.into())
+        );
 
         let clean = SkewTStyle::default()
             .with_font_preset(SoundingFontPreset::CleanProportional)
